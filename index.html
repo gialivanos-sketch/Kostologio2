@@ -1,0 +1,1460 @@
+import { useState, useEffect, useCallback, useRef } from "react";
+import * as XLSX from "xlsx";
+
+// ─── Storage ──────────────────────────────────────────────────────────────────
+const db = {
+  async get(key) { try { const r=await window.storage.get(key); return r?JSON.parse(r.value):null; } catch{return null;} },
+  async set(key,val) { try { await window.storage.set(key,JSON.stringify(val)); return true; } catch{return false;} }
+};
+
+// ─── Seed Data ────────────────────────────────────────────────────────────────
+const SEED = {
+  users: [
+    {id:1,name:"Διαχειριστής",username:"admin",password:"admin123",role:"admin",active:true},
+    {id:2,name:"Σεφ Κουζίνας",username:"chef",password:"chef123",role:"chef",active:true},
+  ],
+  projects: [
+    {id:1, name:"ΕΣΤΙΑΤΟΡΙΟ ΑΘΗΝΑΙΟΝ", type:"Εστιατόριο", city:"Αθήνα", active:true, createdAt:"2025-06-01"},
+    {id:2, name:"ΞΕΝΟΔΟΧΕΙΟ ΠΑΛΛΑΣ", type:"Ξενοδοχείο", city:"Θεσσαλονίκη", active:true, createdAt:"2025-07-01"},
+  ],
+  suppliers: [
+    {id:1,name:"ΕΓΓΛΕΖΟΣ",category:"ΜΑΝΑΒΙΚΗ",email:"egglezos@gmail.com",phone:"",active:true,projectId:null},
+    {id:2,name:"ΤΣΟΥΚΑΛΑΣ",category:"ΜΑΝΑΒΙΚΗ",email:"tsoukalas@gmail.com",phone:"",active:true,projectId:null},
+    {id:3,name:"ΠΕΤΡΟΥΤΣΑ",category:"ΜΑΝΑΒΙΚΗ",email:"zantefruits@gmail.com",phone:"",active:true,projectId:null},
+    {id:4,name:"ΚΟΤΣΩΝΗΣ",category:"ΜΑΝΑΒΙΚΗ",email:"kotsonisbros@gmail.com",phone:"",active:true,projectId:null},
+  ],
+  prices: [
+    {id:1,date:"2025-08-29",product:"ΝΤΟΜΑΤΑ",unit:"ΚΙΛΟ",price:1.20,supplier:"ΕΓΓΛΕΖΟΣ",category:"ΜΑΝΑΒΙΚΗ",projectId:null},
+    {id:2,date:"2025-08-29",product:"ΝΤΟΜΑΤΑ",unit:"ΚΙΛΟ",price:1.05,supplier:"ΤΣΟΥΚΑΛΑΣ",category:"ΜΑΝΑΒΙΚΗ",projectId:null},
+    {id:3,date:"2025-08-29",product:"ΝΤΟΜΑΤΑ",unit:"ΚΙΛΟ",price:1.30,supplier:"ΠΕΤΡΟΥΤΣΑ",category:"ΜΑΝΑΒΙΚΗ",projectId:null},
+    {id:4,date:"2025-08-29",product:"ΜΑΡΟΥΛΙ",unit:"ΤΕΜ",price:0.60,supplier:"ΕΓΓΛΕΖΟΣ",category:"ΜΑΝΑΒΙΚΗ",projectId:null},
+    {id:5,date:"2025-08-29",product:"ΜΑΡΟΥΛΙ",unit:"ΤΕΜ",price:0.55,supplier:"ΤΣΟΥΚΑΛΑΣ",category:"ΜΑΝΑΒΙΚΗ",projectId:null},
+    {id:6,date:"2025-08-29",product:"BLUEBERRY",unit:"ΤΜΧ",price:2.60,supplier:"ΠΕΤΡΟΥΤΣΑ",category:"ΜΑΝΑΒΙΚΗ",projectId:null},
+    {id:7,date:"2025-08-29",product:"BLACKBERRY",unit:"ΤΜΧ",price:4.50,supplier:"ΠΕΤΡΟΥΤΣΑ",category:"ΜΑΝΑΒΙΚΗ",projectId:null},
+    {id:8,date:"2025-07-01",product:"ΝΤΟΜΑΤΑ",unit:"ΚΙΛΟ",price:1.00,supplier:"ΕΓΓΛΕΖΟΣ",category:"ΜΑΝΑΒΙΚΗ",projectId:null},
+  ],
+  recipes: [
+    {id:1,name:"CARPACCIO ΛΑΒΡΑΚΙ",category:"ΚΡΥΑ",portions:1,salePrice:14.00,allergens:["ΨΑΡΙ"],
+     projectId:1,
+     ingredients:[
+       {material:"ΛΑΒΡΑΚΙ ΦΙΛΕΤΟ",qty:0.12,unit:"ΚΙΛΟ",costPerUnit:18.00},
+       {material:"ΕΛΑΙΟΛΑΔΟ",qty:0.02,unit:"ΛΙΤΡΟ",costPerUnit:8.00},
+       {material:"ΛΕΜΟΝΙ",qty:0.05,unit:"ΤΕΜ",costPerUnit:0.30},
+     ],instructions:"Κόβουμε το λαβράκι σε λεπτές φέτες με κοφτερό μαχαίρι.",notes:""},
+  ],
+  orders:[],
+  settings:{alertThreshold:5,currency:"€",company:"KitchenOS"}
+};
+
+const CATEGORIES=["ΜΑΝΑΒΙΚΗ","ΜΠΑΚΑΛΙΚΗ","ΨΑΡΙΑ","ΚΡΕΑΤΑ","ΚΑΘΑΡΙΣΤΙΚΑ","ΑΛΛΟ"];
+const CAT_ICONS={ΜΑΝΑΒΙΚΗ:"🥦",ΜΠΑΚΑΛΙΚΗ:"🧂",ΨΑΡΙΑ:"🐟",ΚΡΕΑΤΑ:"🥩",ΚΑΘΑΡΙΣΤΙΚΑ:"🧹",ΑΛΛΟ:"📦"};
+const CAT_COLORS={ΜΑΝΑΒΙΚΗ:"#16a34a",ΜΠΑΚΑΛΙΚΗ:"#d97706",ΨΑΡΙΑ:"#2563eb",ΚΡΕΑΤΑ:"#dc2626",ΚΑΘΑΡΙΣΤΙΚΑ:"#7c3aed",ΑΛΛΟ:"#6b7280"};
+const PROJECT_COLORS=["#2563eb","#16a34a","#d97706","#dc2626","#7c3aed","#0891b2","#db2777","#65a30d"];
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+function getLatestPrices(prices,projectId=null){
+  const pool=prices.filter(p=>p.projectId===projectId||p.projectId===null);
+  const map={};
+  pool.forEach(p=>{const k=`${p.product}||${p.supplier}`;if(!map[k]||new Date(p.date)>new Date(map[k].date))map[k]=p;});
+  return Object.values(map);
+}
+function getPriceAlerts(data,projectId=null){
+  const threshold=(data.settings?.alertThreshold||5)/100;
+  const alerts=[];
+  const pool=data.prices.filter(p=>p.projectId===projectId||p.projectId===null);
+  const products=[...new Set(pool.map(p=>p.product))];
+  products.forEach(prod=>{
+    const entries=pool.filter(p=>p.product===prod).sort((a,b)=>new Date(a.date)-new Date(b.date));
+    [...new Set(entries.map(e=>e.supplier))].forEach(sup=>{
+      const se=entries.filter(e=>e.supplier===sup);
+      if(se.length>=2){
+        const old=se[se.length-2].price,curr=se[se.length-1].price;
+        if(old>0){const pct=(curr-old)/old;if(pct>threshold)alerts.push({product:prod,supplier:sup,oldPrice:old,newPrice:curr,pct:(pct*100).toFixed(1)});}
+      }
+    });
+  });
+  return alerts;
+}
+
+// ─── UI Primitives ────────────────────────────────────────────────────────────
+const hf=c=>({background:c});
+const Card=({children,style={}})=><div style={{background:"#0d1829",border:"1px solid #1e3a5f",borderRadius:12,padding:20,...style}}>{children}</div>;
+const PageWrap=({children})=><div style={{padding:24}}>{children}</div>;
+const Label=({children})=><div style={{color:"#4a6a8a",fontSize:11,fontWeight:700,letterSpacing:1,textTransform:"uppercase",marginBottom:6}}>{children}</div>;
+const Input=({value,onChange,placeholder="",type="text",style={}})=>(
+  <input type={type} value={value} onChange={onChange} placeholder={placeholder}
+    style={{width:"100%",padding:"9px 12px",background:"#0a1520",border:"1px solid #1e3a5f",borderRadius:7,color:"#c8daea",fontSize:13,outline:"none",boxSizing:"border-box",...style}}/>
+);
+const Select=({value,onChange,children,style={}})=>(
+  <select value={value} onChange={onChange}
+    style={{width:"100%",padding:"9px 12px",background:"#0a1520",border:"1px solid #1e3a5f",borderRadius:7,color:"#c8daea",fontSize:13,outline:"none",boxSizing:"border-box",...style}}>
+    {children}
+  </select>
+);
+const Btn=({onClick,children,variant="primary",small=false,style={}})=>{
+  const C={primary:{bg:"#1d4ed8",t:"#fff"},success:{bg:"#15803d",t:"#fff"},danger:{bg:"#b91c1c",t:"#fff"},ghost:{bg:"#1e3a5f",t:"#93c5fd"},gold:{bg:"#92400e",t:"#fcd34d"}};
+  const c=C[variant]||C.primary;
+  return <button onClick={onClick} style={{padding:small?"6px 12px":"9px 18px",background:c.bg,border:"none",borderRadius:7,color:c.t,fontSize:small?12:13,fontWeight:600,cursor:"pointer",...style}}>{children}</button>;
+};
+const TH=({children,center=false})=>(
+  <th style={{padding:"9px 12px",textAlign:center?"center":"left",color:"#4a7a9b",fontSize:11,fontWeight:700,letterSpacing:1,textTransform:"uppercase",borderBottom:"1px solid #1e3a5f",background:"#080f1a",whiteSpace:"nowrap"}}>{children}</th>
+);
+const TD=({children,center=false,style={}})=>(
+  <td style={{padding:"9px 12px",color:"#c8daea",fontSize:13,borderBottom:"1px solid #0f2030",textAlign:center?"center":"left",...style}}>{children}</td>
+);
+
+// ─── Login ────────────────────────────────────────────────────────────────────
+function LoginScreen({form,setForm,error,onLogin}){
+  return(
+    <div style={{minHeight:"100vh",background:"radial-gradient(ellipse at 40% 50%,#0d2137 0%,#060d18 60%)",display:"flex",alignItems:"center",justifyContent:"center",fontFamily:"'Trebuchet MS',sans-serif"}}>
+      <div style={{textAlign:"center"}}>
+        <div style={{fontSize:56,marginBottom:8}}>🍽</div>
+        <div style={{color:"#e2c97e",fontFamily:"Georgia,serif",fontSize:32,fontWeight:700,letterSpacing:3,marginBottom:4}}>KitchenOS</div>
+        <div style={{color:"#4a6a8a",fontSize:12,letterSpacing:4,marginBottom:40}}>ΣΥΣΤΗΜΑ ΔΙΑΧΕΙΡΙΣΗΣ ΚΟΥΖΙΝΑΣ</div>
+        <div style={{background:"rgba(13,24,41,0.9)",border:"1px solid #1e3a5f",borderRadius:16,padding:"32px 40px",width:320}}>
+          <input placeholder="Όνομα χρήστη" value={form.username} onChange={e=>setForm({...form,username:e.target.value})} onKeyDown={e=>e.key==="Enter"&&onLogin()}
+            style={{width:"100%",padding:"12px 16px",marginBottom:12,background:"#0a1520",border:"1px solid #1e3a5f",borderRadius:8,color:"#c8daea",fontSize:14,outline:"none",boxSizing:"border-box"}}/>
+          <input type="password" placeholder="Κωδικός" value={form.password} onChange={e=>setForm({...form,password:e.target.value})} onKeyDown={e=>e.key==="Enter"&&onLogin()}
+            style={{width:"100%",padding:"12px 16px",marginBottom:20,background:"#0a1520",border:"1px solid #1e3a5f",borderRadius:8,color:"#c8daea",fontSize:14,outline:"none",boxSizing:"border-box"}}/>
+          {error&&<div style={{color:"#ef4444",fontSize:13,marginBottom:12}}>{error}</div>}
+          <button onClick={onLogin} style={{width:"100%",padding:13,background:"linear-gradient(135deg,#1e4a7a,#2563eb)",border:"none",borderRadius:8,color:"#fff",fontWeight:700,fontSize:15,cursor:"pointer"}}>ΕΙΣΟΔΟΣ</button>
+          <div style={{color:"#2a4a6a",fontSize:11,marginTop:14}}>admin / admin123 · chef / chef123</div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Main App ─────────────────────────────────────────────────────────────────
+export default function KitchenOS(){
+  const [user,setUser]=useState(null);
+  const [page,setPage]=useState("dashboard");
+  const [data,setData]=useState(null);
+  const [loading,setLoading]=useState(true);
+  const [loginForm,setLoginForm]=useState({username:"",password:""});
+  const [loginError,setLoginError]=useState("");
+  const [sidebarOpen,setSidebarOpen]=useState(true);
+  const [notification,setNotification]=useState(null);
+  const [activeProject,setActiveProject]=useState(null); // null = global view
+
+  useEffect(()=>{(async()=>{const saved=await db.get("kitchen-v2");const d=saved||SEED;setData(d);if(d.projects?.length)setActiveProject(d.projects[0].id);setLoading(false);})();},[]);
+
+  const save=useCallback(async(newData)=>{setData(newData);await db.set("kitchen-v2",newData);},[]);
+  const notify=(msg,type="success")=>{setNotification({msg,type});setTimeout(()=>setNotification(null),3500);};
+  const login=()=>{
+    const u=data.users.find(u=>u.username===loginForm.username&&u.password===loginForm.password&&u.active);
+    if(u){setUser(u);setLoginError("");}else setLoginError("Λάθος στοιχεία σύνδεσης");
+  };
+
+  if(loading)return <div style={{background:"#0a0f1a",height:"100vh",display:"flex",alignItems:"center",justifyContent:"center"}}><div style={{textAlign:"center",color:"#fff"}}><div style={{fontSize:48}}>🍽</div><div style={{fontFamily:"serif",fontSize:18,letterSpacing:4,marginTop:12,opacity:0.6}}>ΦΟΡΤΩΣΗ...</div></div></div>;
+  if(!user)return <LoginScreen form={loginForm} setForm={setLoginForm} error={loginError} onLogin={login}/>;
+
+  const MENU=[
+    {id:"dashboard",label:"Dashboard",icon:"⊞",roles:["admin","chef"]},
+    {id:"projects",label:"Projects",icon:"🏢",roles:["admin","chef"]},
+    {id:"prices",label:"Εισαγωγή Τιμών",icon:"📥",roles:["admin"]},
+    {id:"compare",label:"Σύγκριση Τιμών",icon:"⚖",roles:["admin","chef"]},
+    {id:"alerts",label:"Αλέρτ Τιμών",icon:"🔔",roles:["admin"]},
+    {id:"recipes",label:"Αρχείο Συνταγών",icon:"📚",roles:["admin","chef"]},
+    {id:"recipe-form",label:"Φόρμα Συνταγής",icon:"✏",roles:["admin","chef"]},
+    {id:"costing",label:"Κοστολόγηση",icon:"💶",roles:["admin","chef"]},
+    {id:"order",label:"Παραγγελία",icon:"🛒",roles:["admin"]},
+    {id:"history",label:"Ιστορικό",icon:"📋",roles:["admin"]},
+    {id:"suppliers",label:"Προμηθευτές",icon:"👥",roles:["admin"]},
+    {id:"users",label:"Χρήστες",icon:"🔐",roles:["admin"]},
+    {id:"settings",label:"Ρυθμίσεις",icon:"⚙",roles:["admin"]},
+  ].filter(m=>m.roles.includes(user.role));
+
+  const activeProj=data.projects?.find(p=>p.id===activeProject);
+  const projColor=activeProj?PROJECT_COLORS[(activeProj.id-1)%PROJECT_COLORS.length]:"#4a6a8a";
+
+  const renderPage=()=>{
+    const props={data,save,notify,currentUser:user,activeProject,setActiveProject};
+    switch(page){
+      case"dashboard":return <Dashboard {...props} setPage={setPage}/>;
+      case"projects":return <ProjectsPage {...props} setPage={setPage}/>;
+      case"prices":return <PricesPage {...props}/>;
+      case"compare":return <ComparePage {...props}/>;
+      case"alerts":return <AlertsPage {...props}/>;
+      case"recipes":return <RecipesPage {...props} setPage={setPage}/>;
+      case"recipe-form":return <RecipeFormPage {...props}/>;
+      case"costing":return <CostingPage {...props}/>;
+      case"order":return <OrderPage {...props}/>;
+      case"history":return <HistoryPage {...props}/>;
+      case"suppliers":return <SuppliersPage {...props}/>;
+      case"users":return <UsersPage {...props}/>;
+      case"settings":return <SettingsPage {...props}/>;
+      default:return <Dashboard {...props} setPage={setPage}/>;
+    }
+  };
+
+  return(
+    <div style={{display:"flex",height:"100vh",background:"#0f172a",fontFamily:"'Trebuchet MS',sans-serif",overflow:"hidden"}}>
+      {/* Sidebar */}
+      <div style={{width:sidebarOpen?230:60,transition:"width 0.3s",background:"linear-gradient(180deg,#0d1829,#0a1020)",borderRight:"1px solid #1e3a5f",display:"flex",flexDirection:"column",overflow:"hidden",flexShrink:0}}>
+        <div style={{padding:"18px 14px",borderBottom:"1px solid #1e3a5f",cursor:"pointer"}} onClick={()=>setSidebarOpen(!sidebarOpen)}>
+          <div style={{display:"flex",alignItems:"center",gap:10}}>
+            <span style={{fontSize:24,flexShrink:0}}>🍽</span>
+            {sidebarOpen&&<div><div style={{color:"#e2c97e",fontWeight:700,fontSize:15,letterSpacing:1}}>KitchenOS</div><div style={{color:"#4a6a8a",fontSize:9,letterSpacing:2}}>ΣΥΣΤΗΜΑ ΚΟΥΖΙΝΑΣ</div></div>}
+          </div>
+        </div>
+
+        {/* Active project indicator */}
+        {sidebarOpen&&activeProj&&(
+          <div style={{margin:"8px 10px",padding:"8px 12px",background:`${projColor}15`,border:`1px solid ${projColor}40`,borderRadius:8,cursor:"pointer"}} onClick={()=>setPage("projects")}>
+            <div style={{color:"#4a6a8a",fontSize:9,letterSpacing:1,marginBottom:2}}>ΕΝΕΡΓΟ PROJECT</div>
+            <div style={{color:projColor,fontSize:12,fontWeight:700,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{activeProj.name}</div>
+          </div>
+        )}
+
+        <nav style={{flex:1,overflowY:"auto",padding:"4px 0"}}>
+          {MENU.map(m=>(
+            <div key={m.id} onClick={()=>setPage(m.id)}
+              style={{display:"flex",alignItems:"center",gap:10,padding:"9px 14px",cursor:"pointer",margin:"1px 6px",borderRadius:7,background:page===m.id?"linear-gradient(90deg,#1e3a5f,#1a3050)":"transparent",borderLeft:page===m.id?"3px solid #e2c97e":"3px solid transparent",transition:"all 0.15s"}}>
+              <span style={{fontSize:15,flexShrink:0}}>{m.icon}</span>
+              {sidebarOpen&&<span style={{color:page===m.id?"#e2c97e":"#7a9ab5",fontSize:13,whiteSpace:"nowrap"}}>{m.label}</span>}
+            </div>
+          ))}
+        </nav>
+
+        <div style={{padding:"10px 12px",borderTop:"1px solid #1e3a5f"}}>
+          <div style={{display:"flex",alignItems:"center",gap:8}}>
+            <div style={{width:30,height:30,borderRadius:"50%",background:"#1e3a5f",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}}>
+              <span style={{fontSize:13}}>{user.role==="admin"?"👑":"👨‍🍳"}</span>
+            </div>
+            {sidebarOpen&&<div style={{overflow:"hidden"}}>
+              <div style={{color:"#c8daea",fontSize:12,fontWeight:600,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{user.name}</div>
+              <div style={{color:"#4a6a8a",fontSize:10}}>{user.role==="admin"?"Διαχειριστής":"Σεφ"}</div>
+            </div>}
+          </div>
+          {sidebarOpen&&<button onClick={()=>setUser(null)} style={{marginTop:8,width:"100%",padding:"5px",background:"#1a2a3a",border:"1px solid #2a4a6a",borderRadius:5,color:"#7a9ab5",fontSize:11,cursor:"pointer"}}>Αποσύνδεση</button>}
+        </div>
+      </div>
+
+      {/* Main */}
+      <div style={{flex:1,display:"flex",flexDirection:"column",overflow:"hidden"}}>
+        {/* Topbar */}
+        <div style={{height:50,background:"#0d1829",borderBottom:"1px solid #1e3a5f",display:"flex",alignItems:"center",justifyContent:"space-between",padding:"0 20px",flexShrink:0}}>
+          <div style={{display:"flex",alignItems:"center",gap:12}}>
+            <span style={{color:"#e2c97e",fontWeight:600,fontSize:14}}>{MENU.find(m=>m.id===page)?.icon} {MENU.find(m=>m.id===page)?.label}</span>
+            {activeProj&&<span style={{background:`${projColor}20`,border:`1px solid ${projColor}50`,color:projColor,fontSize:11,padding:"3px 10px",borderRadius:10,fontWeight:600}}>🏢 {activeProj.name}</span>}
+          </div>
+          <div style={{display:"flex",alignItems:"center",gap:14}}>
+            {notification&&<div style={{background:notification.type==="success"?"#14532d":"#7f1d1d",color:"#fff",padding:"6px 14px",borderRadius:6,fontSize:12,border:`1px solid ${notification.type==="success"?"#16a34a":"#dc2626"}`}}>{notification.msg}</div>}
+            <span style={{color:"#4a6a8a",fontSize:11}}>{new Date().toLocaleDateString("el-GR",{weekday:"long",day:"numeric",month:"long"})}</span>
+          </div>
+        </div>
+
+        <div style={{flex:1,overflowY:"auto",background:"#0f172a"}}>
+          {renderPage()}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Dashboard ────────────────────────────────────────────────────────────────
+function Dashboard({data,setPage,activeProject,setActiveProject}){
+  const alerts=getPriceAlerts(data,activeProject);
+  const projRecipes=data.recipes.filter(r=>activeProject?r.projectId===activeProject:true);
+  return(
+    <PageWrap>
+      <div style={{marginBottom:20}}>
+        <div style={{color:"#e2c97e",fontSize:20,fontWeight:700,fontFamily:"Georgia,serif"}}>Καλημέρα 👋</div>
+        <div style={{color:"#4a6a8a",fontSize:13,marginTop:3}}>Επισκόπηση συστήματος · {data.projects?.length||0} Projects</div>
+      </div>
+
+      {/* Projects quick switch */}
+      <div style={{display:"flex",gap:10,marginBottom:20,flexWrap:"wrap"}}>
+        <button onClick={()=>{setActiveProject(null);setPage("projects");}}
+          style={{padding:"8px 16px",borderRadius:8,border:`2px solid ${!activeProject?"#e2c97e":"#1e3a5f"}`,background:!activeProject?"#1a1000":"transparent",color:!activeProject?"#e2c97e":"#4a6a8a",fontSize:12,cursor:"pointer",fontWeight:600}}>
+          🌐 Γενική Προβολή
+        </button>
+        {data.projects?.filter(p=>p.active).map((p,i)=>{
+          const c=PROJECT_COLORS[i%PROJECT_COLORS.length];
+          return(
+            <button key={p.id} onClick={()=>setActiveProject(p.id)}
+              style={{padding:"8px 16px",borderRadius:8,border:`2px solid ${activeProject===p.id?c:"#1e3a5f"}`,background:activeProject===p.id?`${c}20`:"transparent",color:activeProject===p.id?c:"#4a6a8a",fontSize:12,cursor:"pointer",fontWeight:600}}>
+              🏢 {p.name}
+            </button>
+          );
+        })}
+        <button onClick={()=>setPage("projects")}
+          style={{padding:"8px 14px",borderRadius:8,border:"1px dashed #1e3a5f",background:"transparent",color:"#4a6a8a",fontSize:12,cursor:"pointer"}}>
+          + Νέο Project
+        </button>
+      </div>
+
+      <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:14,marginBottom:20}}>
+        {[
+          {label:"Projects",value:data.projects?.length||0,icon:"🏢",color:"#2563eb",bg:"#172040"},
+          {label:"Καταχ. Τιμές",value:data.prices.filter(p=>!p.projectId||p.projectId===activeProject).length,icon:"💰",color:"#16a34a",bg:"#0d2010"},
+          {label:"Συνταγές",value:projRecipes.length,icon:"📖",color:"#d97706",bg:"#201508"},
+          {label:"Αλέρτ",value:alerts.length,icon:"🔔",color:alerts.length>0?"#ef4444":"#16a34a",bg:alerts.length>0?"#200808":"#0d2010"},
+        ].map(k=>(
+          <Card key={k.label} style={{background:`linear-gradient(135deg,${k.bg},#0d1829)`,border:`1px solid ${k.color}30`}}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start"}}>
+              <div><div style={{color:"#4a6a8a",fontSize:10,letterSpacing:1,textTransform:"uppercase",marginBottom:6}}>{k.label}</div><div style={{color:k.color,fontSize:30,fontWeight:700}}>{k.value}</div></div>
+              <span style={{fontSize:26,opacity:0.6}}>{k.icon}</span>
+            </div>
+          </Card>
+        ))}
+      </div>
+
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:16}}>
+        <Card>
+          <div style={{color:"#e2c97e",fontWeight:700,marginBottom:14}}>⚡ Γρήγορες Ενέργειες</div>
+          {[
+            {label:"Εισαγωγή τιμών (Excel ή χειροκίνητα)",page:"prices",icon:"📥"},
+            {label:"Σύγκριση τιμών",page:"compare",icon:"⚖"},
+            {label:"Νέα παραγγελία",page:"order",icon:"🛒"},
+            {label:"Φόρμα συνταγής",page:"recipe-form",icon:"✏"},
+            {label:"Διαχείριση Projects",page:"projects",icon:"🏢"},
+          ].map(a=>(
+            <button key={a.page} onClick={()=>setPage(a.page)}
+              style={{display:"flex",alignItems:"center",gap:10,padding:"9px 12px",marginBottom:6,background:"#0a1520",border:"1px solid #1e3a5f",borderRadius:8,color:"#93c5fd",fontSize:13,cursor:"pointer",width:"100%",textAlign:"left"}}>
+              <span>{a.icon}</span>{a.label}
+            </button>
+          ))}
+        </Card>
+        <Card>
+          <div style={{color:"#ef4444",fontWeight:700,marginBottom:14}}>🔔 Αλέρτ Ανατίμησης</div>
+          {alerts.length===0?<div style={{color:"#16a34a",fontSize:13,padding:"20px 0",textAlign:"center"}}>✅ Δεν υπάρχουν αλέρτ</div>
+          :alerts.slice(0,5).map((a,i)=>(
+            <div key={i} style={{display:"flex",justifyContent:"space-between",padding:"8px 10px",background:"#1a0808",borderRadius:6,marginBottom:6,border:"1px solid #3a1010"}}>
+              <div><div style={{color:"#fca5a5",fontSize:12,fontWeight:600}}>{a.product}</div><div style={{color:"#7a9ab5",fontSize:11}}>{a.supplier}</div></div>
+              <div style={{color:"#ef4444",fontWeight:700}}>+{a.pct}%</div>
+            </div>
+          ))}
+        </Card>
+      </div>
+    </PageWrap>
+  );
+}
+
+// ─── Projects Page ────────────────────────────────────────────────────────────
+function ProjectsPage({data,save,notify,activeProject,setActiveProject,setPage}){
+  const [adding,setAdding]=useState(false);
+  const [form,setForm]=useState({name:"",type:"Εστιατόριο",city:""});
+
+  const addProject=()=>{
+    if(!form.name.trim()){notify("Συμπληρώστε όνομα","error");return;}
+    const p={id:Date.now(),...form,active:true,createdAt:new Date().toISOString().split("T")[0]};
+    const updated={...data,projects:[...(data.projects||[]),p]};
+    save(updated);notify("✅ Project δημιουργήθηκε");
+    setForm({name:"",type:"Εστιατόριο",city:""});setAdding(false);
+    setActiveProject(p.id);
+  };
+
+  const toggleProject=(id)=>save({...data,projects:data.projects.map(p=>p.id===id?{...p,active:!p.active}:p)});
+  const deleteProject=(id)=>{
+    if(activeProject===id)setActiveProject(null);
+    save({...data,projects:data.projects.filter(p=>p.id!==id),recipes:data.recipes.filter(r=>r.projectId!==id)});
+    notify("Project διαγράφηκε");
+  };
+
+  const TYPES=["Εστιατόριο","Ξενοδοχείο","Catering","Ταβέρνα","Μπαρ","Καφέ","Άλλο"];
+
+  return(
+    <PageWrap>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:20}}>
+        <div><div style={{color:"#e2c97e",fontWeight:700,fontSize:18}}>🏢 Διαχείριση Projects</div>
+        <div style={{color:"#4a6a8a",fontSize:13,marginTop:3}}>Κάθε project = μία επιχείρηση με δικές της συνταγές και κοστολόγηση</div></div>
+        <Btn onClick={()=>setAdding(!adding)} variant={adding?"ghost":"success"}>{adding?"Ακύρωση":"+ Νέο Project"}</Btn>
+      </div>
+
+      {adding&&(
+        <Card style={{marginBottom:20,border:"1px solid #16a34a"}}>
+          <div style={{color:"#16a34a",fontWeight:700,marginBottom:16}}>Νέο Project</div>
+          <div style={{display:"grid",gridTemplateColumns:"2fr 1fr 1fr auto",gap:12,alignItems:"flex-end"}}>
+            <div><Label>Επωνυμία Επιχείρησης *</Label><Input value={form.name} onChange={e=>setForm({...form,name:e.target.value})} placeholder="π.χ. ΞΕΝΟΔΟΧΕΙΟ ΠΑΛΛΑΣ"/></div>
+            <div><Label>Τύπος</Label><Select value={form.type} onChange={e=>setForm({...form,type:e.target.value})}>{TYPES.map(t=><option key={t}>{t}</option>)}</Select></div>
+            <div><Label>Πόλη</Label><Input value={form.city} onChange={e=>setForm({...form,city:e.target.value})} placeholder="Αθήνα"/></div>
+            <Btn onClick={addProject} variant="success">Δημιουργία</Btn>
+          </div>
+        </Card>
+      )}
+
+      <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(320px,1fr))",gap:16}}>
+        {(data.projects||[]).map((p,i)=>{
+          const color=PROJECT_COLORS[i%PROJECT_COLORS.length];
+          const recipeCount=data.recipes.filter(r=>r.projectId===p.id).length;
+          const isActive=activeProject===p.id;
+          return(
+            <Card key={p.id} style={{borderTop:`3px solid ${color}`,border:`1px solid ${isActive?color:"#1e3a5f"}`,background:isActive?`${color}08`:"#0d1829"}}>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:12}}>
+                <div>
+                  <div style={{color:color,fontWeight:700,fontSize:16,marginBottom:2}}>{p.name}</div>
+                  <div style={{color:"#4a6a8a",fontSize:12}}>{p.type}{p.city?` · ${p.city}`:""} · από {p.createdAt}</div>
+                </div>
+                {isActive&&<span style={{background:`${color}20`,color:color,fontSize:10,padding:"3px 10px",borderRadius:10,fontWeight:700}}>ΕΝΕΡΓΟ</span>}
+              </div>
+              <div style={{display:"flex",gap:10,marginBottom:14}}>
+                <div style={{flex:1,background:"#0a1520",borderRadius:7,padding:"8px 12px"}}>
+                  <div style={{color:"#4a6a8a",fontSize:10,marginBottom:2}}>ΣΥΝΤΑΓΕΣ</div>
+                  <div style={{color:color,fontWeight:700,fontSize:20}}>{recipeCount}</div>
+                </div>
+                <div style={{flex:1,background:"#0a1520",borderRadius:7,padding:"8px 12px"}}>
+                  <div style={{color:"#4a6a8a",fontSize:10,marginBottom:2}}>ΚΑΤΑΣΤΑΣΗ</div>
+                  <div style={{color:p.active?"#16a34a":"#4a6a8a",fontWeight:700,fontSize:13}}>{p.active?"✓ Ενεργό":"✕ Ανενεργό"}</div>
+                </div>
+              </div>
+              <div style={{display:"flex",gap:8}}>
+                <Btn small variant={isActive?"gold":"ghost"} style={{flex:1}}
+                  onClick={()=>{setActiveProject(p.id);setPage("recipes");}}>
+                  {isActive?"✓ Ενεργό":"Επιλογή"}
+                </Btn>
+                <Btn small variant="ghost" onClick={()=>{setActiveProject(p.id);setPage("recipe-form");}}>+ Συνταγή</Btn>
+                <Btn small variant="danger" onClick={()=>deleteProject(p.id)}>✕</Btn>
+              </div>
+            </Card>
+          );
+        })}
+      </div>
+    </PageWrap>
+  );
+}
+
+// ─── Prices Page (with Excel import) ─────────────────────────────────────────
+function PricesPage({data,save,notify,activeProject}){
+  const [mode,setMode]=useState("excel"); // "excel" | "manual"
+  const [supplier,setSupplier]=useState(data.suppliers[0]?.name||"");
+  const [category,setCategory]=useState("ΜΑΝΑΒΙΚΗ");
+  const [date,setDate]=useState(new Date().toISOString().split("T")[0]);
+  const [rows,setRows]=useState([{product:"",unit:"ΚΙΛΟ",price:""}]);
+  const [excelPreview,setExcelPreview]=useState(null); // {raw, mapped}
+  const [colMap,setColMap]=useState({product:0,unit:1,price:2});
+  const [importing,setImporting]=useState(false);
+  const fileRef=useRef();
+  const UNITS=["ΚΙΛΟ","ΛΙΤΡΟ","ΤΕΜ","ΤΜΧ","ΓΡΑΜΜΑΡΙΑ","ΤΕΜΑΧΙΟ","ΚΙΒΩΤΙΟ"];
+
+  const handleFile=async(e)=>{
+    const file=e.target.files[0];if(!file)return;
+    setImporting(true);
+    try{
+      const ab=await file.arrayBuffer();
+      const wb=XLSX.read(ab,{type:"array"});
+      const ws=wb.Sheets[wb.SheetNames[0]];
+      const raw=XLSX.utils.sheet_to_json(ws,{header:1,defval:""});
+      // Find header row (first row with 3+ non-empty cells)
+      let headerRow=0;
+      for(let i=0;i<Math.min(10,raw.length);i++){
+        if(raw[i].filter(c=>c!=="").length>=2){headerRow=i;break;}
+      }
+      const headers=raw[headerRow].map((h,i)=>({label:String(h),idx:i}));
+      const dataRows=raw.slice(headerRow+1).filter(r=>r.some(c=>c!==""));
+
+      // Auto-detect columns
+      const autoMap={product:0,unit:1,price:2};
+      headers.forEach(h=>{
+        const hl=String(h.label).toLowerCase();
+        if(/(προϊ|product|name|περιγ|desc|υλικ)/i.test(hl))autoMap.product=h.idx;
+        else if(/(μον|unit|um)/i.test(hl))autoMap.unit=h.idx;
+        else if(/(τιμ|price|αξ|cost)/i.test(hl))autoMap.price=h.idx;
+      });
+
+      setColMap(autoMap);
+      setExcelPreview({headers,dataRows,fileName:file.name});
+    }catch(err){notify("Σφάλμα ανάγνωσης αρχείου","error");}
+    setImporting(false);
+    if(fileRef.current)fileRef.current.value="";
+  };
+
+  const getMappedRows=()=>{
+    if(!excelPreview)return[];
+    return excelPreview.dataRows.map(r=>({
+      product:String(r[colMap.product]||"").trim().toUpperCase(),
+      unit:String(r[colMap.unit]||"ΚΙΛΟ").trim().toUpperCase()||"ΚΙΛΟ",
+      price:parseFloat(String(r[colMap.price]||"0").replace(",","."))||0,
+    })).filter(r=>r.product&&r.price>0);
+  };
+
+  const importExcel=()=>{
+    const mapped=getMappedRows();
+    if(!mapped.length){notify("Δεν βρέθηκαν έγκυρες γραμμές","error");return;}
+    const latest=getLatestPrices(data.prices,activeProject);
+    const newPrices=mapped.map((r,i)=>{
+      const existing=latest.find(p=>p.product===r.product&&p.supplier===supplier);
+      return{id:Date.now()+i,date,product:r.product,unit:r.unit,price:r.price,supplier,category,projectId:activeProject||null,prevPrice:existing?.price||null};
+    });
+    save({...data,prices:[...data.prices,...newPrices]});
+    notify(`✅ Εισήχθησαν ${newPrices.length} τιμές από ${supplier}`);
+    setExcelPreview(null);
+  };
+
+  const importManual=()=>{
+    const valid=rows.filter(r=>r.product.trim()&&r.price&&!isNaN(parseFloat(r.price)));
+    if(!valid.length){notify("Δεν υπάρχουν έγκυρες γραμμές","error");return;}
+    const latest=getLatestPrices(data.prices,activeProject);
+    const newPrices=valid.map((r,i)=>{
+      const existing=latest.find(p=>p.product===r.product.toUpperCase()&&p.supplier===supplier);
+      return{id:Date.now()+i,date,product:r.product.trim().toUpperCase(),unit:r.unit,price:parseFloat(r.price),supplier,category,projectId:activeProject||null,prevPrice:existing?.price||null};
+    });
+    save({...data,prices:[...data.prices,...newPrices]});
+    notify(`✅ Εισήχθησαν ${newPrices.length} τιμές`);
+    setRows([{product:"",unit:"ΚΙΛΟ",price:""}]);
+  };
+
+  const updateRow=(i,k,v)=>{const r=[...rows];r[i]={...r[i],[k]:v};setRows(r);};
+  const mapped=excelPreview?getMappedRows():[];
+
+  return(
+    <PageWrap>
+      {/* Top controls */}
+      <div style={{display:"grid",gridTemplateColumns:"280px 1fr",gap:16,marginBottom:16}}>
+        <Card>
+          <div style={{color:"#e2c97e",fontWeight:700,marginBottom:16}}>Στοιχεία Εισαγωγής</div>
+          <div style={{marginBottom:12}}><Label>Ημερομηνία</Label><Input type="date" value={date} onChange={e=>setDate(e.target.value)}/></div>
+          <div style={{marginBottom:12}}>
+            <Label>Κατηγορία</Label>
+            <Select value={category} onChange={e=>setCategory(e.target.value)}>{CATEGORIES.map(c=><option key={c}>{c}</option>)}</Select>
+          </div>
+          <div style={{marginBottom:16}}>
+            <Label>Προμηθευτής</Label>
+            <Select value={supplier} onChange={e=>{setSupplier(e.target.value);const s=data.suppliers.find(x=>x.name===e.target.value);if(s)setCategory(s.category);}}>
+              {data.suppliers.filter(s=>s.active).map(s=><option key={s.id}>{s.name}</option>)}
+            </Select>
+          </div>
+          {/* Mode toggle */}
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:6,marginBottom:12}}>
+            <button onClick={()=>setMode("excel")} style={{padding:"8px 6px",borderRadius:7,border:`2px solid ${mode==="excel"?"#2563eb":"#1e3a5f"}`,background:mode==="excel"?"#172040":"transparent",color:mode==="excel"?"#93c5fd":"#4a6a8a",fontSize:12,cursor:"pointer",fontWeight:600}}>📂 Excel</button>
+            <button onClick={()=>setMode("manual")} style={{padding:"8px 6px",borderRadius:7,border:`2px solid ${mode==="manual"?"#16a34a":"#1e3a5f"}`,background:mode==="manual"?"#0d2010":"transparent",color:mode==="manual"?"#16a34a":"#4a6a8a",fontSize:12,cursor:"pointer",fontWeight:600}}>⌨ Χειροκίνητα</button>
+          </div>
+          <div style={{background:"#0a1520",borderRadius:8,padding:"10px 12px",border:"1px solid #1e3a5f"}}>
+            <div style={{color:"#4a6a8a",fontSize:10,marginBottom:3}}>ΕΠΙΛΕΓΜΕΝΟΣ</div>
+            <div style={{color:"#e2c97e",fontWeight:700,fontSize:15}}>{supplier}</div>
+            <div style={{color:CAT_COLORS[category]||"#888",fontSize:11}}>{CAT_ICONS[category]} {category}</div>
+          </div>
+        </Card>
+
+        {/* Excel import panel */}
+        {mode==="excel"&&(
+          <Card>
+            <div style={{color:"#e2c97e",fontWeight:700,marginBottom:16}}>📂 Εισαγωγή από Excel</div>
+            {!excelPreview?(
+              <div>
+                <div style={{border:"2px dashed #1e3a5f",borderRadius:10,padding:"40px 20px",textAlign:"center",marginBottom:16,cursor:"pointer"}}
+                  onClick={()=>fileRef.current?.click()}>
+                  <div style={{fontSize:40,marginBottom:10}}>📊</div>
+                  <div style={{color:"#c8daea",fontWeight:600,marginBottom:6}}>Κάντε κλικ για επιλογή αρχείου Excel</div>
+                  <div style={{color:"#4a6a8a",fontSize:12}}>Υποστηρίζονται: .xlsx · .xls · .csv</div>
+                  <div style={{color:"#4a6a8a",fontSize:11,marginTop:8}}>Το αρχείο πρέπει να έχει στήλες: Προϊόν · Μονάδα · Τιμή</div>
+                </div>
+                <input ref={fileRef} type="file" accept=".xlsx,.xls,.csv" onChange={handleFile} style={{display:"none"}}/>
+                {importing&&<div style={{textAlign:"center",color:"#e2c97e"}}>⏳ Ανάγνωση αρχείου...</div>}
+              </div>
+            ):(
+              <div>
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
+                  <div style={{color:"#16a34a",fontSize:13}}>✅ {excelPreview.fileName} — {mapped.length} γραμμές</div>
+                  <Btn small variant="ghost" onClick={()=>setExcelPreview(null)}>✕ Νέο αρχείο</Btn>
+                </div>
+
+                {/* Column mapping */}
+                <div style={{background:"#0a1520",borderRadius:8,padding:14,marginBottom:14,border:"1px solid #1e3a5f"}}>
+                  <div style={{color:"#4a6a8a",fontSize:11,fontWeight:700,letterSpacing:1,marginBottom:10}}>ΑΝΤΙΣΤΟΙΧΗΣΗ ΣΤΗΛΩΝ</div>
+                  <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:10}}>
+                    {[["product","Προϊόν"],["unit","Μονάδα"],["price","Τιμή"]].map(([k,lbl])=>(
+                      <div key={k}>
+                        <Label>{lbl}</Label>
+                        <Select value={colMap[k]} onChange={e=>setColMap({...colMap,[k]:parseInt(e.target.value)})}>
+                          {excelPreview.headers.map(h=><option key={h.idx} value={h.idx}>{h.label||`Στήλη ${h.idx+1}`}</option>)}
+                        </Select>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Preview table */}
+                <div style={{maxHeight:280,overflowY:"auto",marginBottom:14}}>
+                  <table style={{width:"100%",borderCollapse:"collapse"}}>
+                    <thead><tr><TH>#</TH><TH>Προϊόν</TH><TH>Μονάδα</TH><TH center>Τιμή</TH><TH center>Προηγ. Τιμή</TH><TH center>% Αλλαγή</TH></tr></thead>
+                    <tbody>
+                      {mapped.map((r,i)=>{
+                        const latest=getLatestPrices(data.prices,activeProject).find(p=>p.product===r.product&&p.supplier===supplier);
+                        const pct=latest&&latest.price>0?((r.price-latest.price)/latest.price*100).toFixed(1):null;
+                        return(
+                          <tr key={i} style={{background:i%2===0?"#080f1a":"transparent"}}>
+                            <TD center><span style={{color:"#4a6a8a"}}>{i+1}</span></TD>
+                            <TD style={{fontWeight:600}}>{r.product}</TD>
+                            <TD center style={{color:"#4a6a8a"}}>{r.unit}</TD>
+                            <TD center style={{color:"#e2c97e",fontWeight:700}}>{r.price.toFixed(4)}€</TD>
+                            <TD center style={{color:"#4a6a8a"}}>{latest?`${latest.price.toFixed(4)}€`:"—"}</TD>
+                            <TD center>{pct!==null?<span style={{color:parseFloat(pct)>5?"#ef4444":parseFloat(pct)>0?"#f59e0b":"#16a34a",fontWeight:700,fontSize:12}}>{parseFloat(pct)>0?"+":""}{pct}%</span>:"—"}</TD>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+                <Btn onClick={importExcel} variant="success" style={{width:"100%",padding:11}}>
+                  ✅ ΕΙΣΑΓΩΓΗ {mapped.length} ΤΙΜΩΝ ΑΠΟ {supplier}
+                </Btn>
+              </div>
+            )}
+          </Card>
+        )}
+
+        {/* Manual entry */}
+        {mode==="manual"&&(
+          <Card>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14}}>
+              <div style={{color:"#e2c97e",fontWeight:700}}>⌨ Χειροκίνητη Εισαγωγή</div>
+              <Btn small variant="ghost" onClick={()=>setRows([...rows,{product:"",unit:"ΚΙΛΟ",price:""}])}>+ Γραμμή</Btn>
+            </div>
+            <div style={{maxHeight:340,overflowY:"auto"}}>
+              <table style={{width:"100%",borderCollapse:"collapse"}}>
+                <thead><tr><TH>#</TH><TH>Προϊόν</TH><TH>Μονάδα</TH><TH>Τιμή (€)</TH><TH center>Τελευτ.</TH><TH center>%</TH><TH></TH></tr></thead>
+                <tbody>
+                  {rows.map((r,i)=>{
+                    const latest=getLatestPrices(data.prices,activeProject).find(p=>p.product===r.product.toUpperCase()&&p.supplier===supplier);
+                    const pct=latest&&r.price&&!isNaN(parseFloat(r.price))?((parseFloat(r.price)-latest.price)/latest.price*100).toFixed(1):null;
+                    return(
+                      <tr key={i} style={{background:i%2===0?"#080f1a":"transparent"}}>
+                        <TD center style={{color:"#4a6a8a"}}>{i+1}</TD>
+                        <TD><input value={r.product} onChange={e=>updateRow(i,"product",e.target.value)} placeholder="Προϊόν..." style={{width:"100%",background:"transparent",border:"none",borderBottom:"1px solid #1e3a5f",color:"#c8daea",fontSize:13,padding:"3px 0",outline:"none"}}/></TD>
+                        <TD><select value={r.unit} onChange={e=>updateRow(i,"unit",e.target.value)} style={{background:"#0a1520",border:"1px solid #1e3a5f",borderRadius:5,color:"#c8daea",fontSize:11,padding:"3px 6px"}}>{UNITS.map(u=><option key={u}>{u}</option>)}</select></TD>
+                        <TD><input value={r.price} onChange={e=>updateRow(i,"price",e.target.value)} placeholder="0.00" style={{width:70,background:"transparent",border:"none",borderBottom:"1px solid #1e3a5f",color:"#e2c97e",fontSize:13,padding:"3px 0",outline:"none",textAlign:"right"}}/></TD>
+                        <TD center style={{color:"#4a6a8a",fontSize:11}}>{latest?`${latest.price.toFixed(4)}€`:"—"}</TD>
+                        <TD center>{pct!==null?<span style={{color:parseFloat(pct)>5?"#ef4444":parseFloat(pct)>0?"#f59e0b":"#16a34a",fontWeight:700,fontSize:11}}>{parseFloat(pct)>0?"+":""}{pct}%</span>:"—"}</TD>
+                        <TD center><Btn small variant="danger" onClick={()=>setRows(rows.filter((_,idx)=>idx!==i))}>✕</Btn></TD>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+            <button onClick={()=>setRows([...rows,{product:"",unit:"ΚΙΛΟ",price:""}])} style={{width:"100%",padding:"8px",marginTop:8,background:"transparent",border:"1px dashed #1e3a5f",borderRadius:7,color:"#4a6a8a",fontSize:12,cursor:"pointer"}}>+ Γραμμή</button>
+            <Btn onClick={importManual} variant="success" style={{width:"100%",marginTop:10,padding:11}}>✅ ΕΙΣΑΓΩΓΗ</Btn>
+          </Card>
+        )}
+      </div>
+    </PageWrap>
+  );
+}
+
+// ─── Compare Page ─────────────────────────────────────────────────────────────
+function ComparePage({data,notify,activeProject}){
+  const [search,setSearch]=useState("");
+  const [catFilter,setCatFilter]=useState("ΟΛΑ");
+  const latest=getLatestPrices(data.prices,activeProject);
+  const products=[...new Set(latest.map(p=>p.product))].sort();
+  const filtered=products.filter(p=>{
+    if(search&&!p.toLowerCase().includes(search.toLowerCase()))return false;
+    if(catFilter!=="ΟΛΑ"){const e=latest.filter(x=>x.product===p);if(!e.some(x=>x.category===catFilter))return false;}
+    return true;
+  });
+  return(
+    <PageWrap>
+      <Card style={{marginBottom:14}}>
+        <div style={{display:"flex",gap:10,alignItems:"center",flexWrap:"wrap"}}>
+          <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="🔍 Αναζήτηση..."
+            style={{flex:1,minWidth:200,padding:"9px 12px",background:"#0a1520",border:"1px solid #1e3a5f",borderRadius:7,color:"#c8daea",fontSize:13,outline:"none"}}/>
+          {["ΟΛΑ",...CATEGORIES].map(c=>(
+            <button key={c} onClick={()=>setCatFilter(c)}
+              style={{padding:"7px 12px",borderRadius:7,border:`1px solid ${catFilter===c?(CAT_COLORS[c]||"#e2c97e"):"#1e3a5f"}`,background:catFilter===c?"#0a1520":"transparent",color:catFilter===c?(CAT_COLORS[c]||"#e2c97e"):"#4a6a8a",fontSize:11,cursor:"pointer",fontWeight:catFilter===c?700:400}}>
+              {CAT_ICONS[c]||"📦"} {c}
+            </button>
+          ))}
+        </div>
+      </Card>
+      <Card>
+        <div style={{color:"#e2c97e",fontWeight:700,marginBottom:14}}>⚖ Σύγκριση Τιμών — {filtered.length} προϊόντα</div>
+        <div style={{overflowX:"auto"}}>
+          <table style={{width:"100%",borderCollapse:"collapse"}}>
+            <thead><tr>
+              <TH>Προϊόν</TH><TH>Μον.</TH><TH>Κατηγορία</TH>
+              {data.suppliers.filter(s=>s.active).map(s=><TH key={s.id} center>{s.name}</TH>)}
+              <TH center>✅ Φθηνότερος</TH><TH center>Εξοικονόμηση</TH>
+            </tr></thead>
+            <tbody>
+              {filtered.map(prod=>{
+                const entries=latest.filter(p=>p.product===prod);
+                const prices=entries.map(e=>e.price);
+                const minP=Math.min(...prices),maxP=Math.max(...prices);
+                const best=entries.find(e=>e.price===minP);
+                const pctDiff=maxP>0?((maxP-minP)/maxP*100).toFixed(1):0;
+                const unit=entries[0]?.unit||"",cat=entries[0]?.category||"";
+                const isMulti=entries.length>1;
+                return(
+                  <tr key={prod} style={{background:"#080f1a"}}>
+                    <TD style={{fontWeight:600}}>{prod}</TD>
+                    <TD style={{color:"#4a7a9b",fontSize:11}}>{unit}</TD>
+                    <TD style={{color:CAT_COLORS[cat]||"#888",fontSize:11}}>{CAT_ICONS[cat]} {cat}</TD>
+                    {data.suppliers.filter(s=>s.active).map(s=>{
+                      const e=entries.find(x=>x.supplier===s.name);
+                      const isBest=e&&e.price===minP&&isMulti;
+                      return(
+                        <TD key={s.id} center>
+                          {e?<span style={{color:isBest?"#16a34a":"#c8daea",fontWeight:isBest?700:400,background:isBest?"#0d2010":"transparent",padding:isBest?"2px 8px":"0",borderRadius:5,fontSize:12}}>{e.price.toFixed(4)}€</span>:<span style={{color:"#2a4a6a"}}>—</span>}
+                        </TD>
+                      );
+                    })}
+                    <TD center style={{color:"#16a34a",fontWeight:700}}>{best?.supplier||"—"}</TD>
+                    <TD center>{isMulti&&parseFloat(pctDiff)>0?<span style={{color:"#f59e0b",fontWeight:600,fontSize:11}}>-{pctDiff}%</span>:<span style={{color:"#4a6a8a"}}>—</span>}</TD>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      </Card>
+    </PageWrap>
+  );
+}
+
+// ─── Alerts Page ──────────────────────────────────────────────────────────────
+function AlertsPage({data,activeProject}){
+  const alerts=getPriceAlerts(data,activeProject);
+  const threshold=data.settings?.alertThreshold||5;
+  return(
+    <PageWrap>
+      <div style={{color:"#ef4444",fontSize:16,fontWeight:700,marginBottom:16}}>🔔 Αλέρτ Ανατίμησης — πλαφόν +{threshold}%</div>
+      {alerts.length===0?<Card style={{textAlign:"center",padding:50}}><div style={{fontSize:40,marginBottom:10}}>✅</div><div style={{color:"#16a34a",fontSize:16,fontWeight:700}}>Δεν υπάρχουν αλέρτ</div></Card>:(
+        <Card>
+          <table style={{width:"100%",borderCollapse:"collapse"}}>
+            <thead><tr><TH>Προϊόν</TH><TH>Προμηθευτής</TH><TH center>Παλιά Τιμή</TH><TH center>Νέα Τιμή</TH><TH center>% Αύξηση</TH><TH center>Κατάσταση</TH></tr></thead>
+            <tbody>{alerts.map((a,i)=>(
+              <tr key={i} style={{background:i%2===0?"#1a0808":"#100505"}}>
+                <TD style={{color:"#fca5a5",fontWeight:600}}>{a.product}</TD><TD>{a.supplier}</TD>
+                <TD center style={{color:"#4a6a8a"}}>{a.oldPrice.toFixed(4)}€</TD>
+                <TD center style={{color:"#ef4444",fontWeight:700}}>{a.newPrice.toFixed(4)}€</TD>
+                <TD center><span style={{color:"#ef4444",fontWeight:700}}>+{a.pct}%</span></TD>
+                <TD center><span style={{background:"#7f1d1d",color:"#fca5a5",padding:"2px 10px",borderRadius:10,fontSize:11,fontWeight:700}}>🔴 ΥΠΕΡΒΑΣΗ</span></TD>
+              </tr>
+            ))}</tbody>
+          </table>
+        </Card>
+      )}
+    </PageWrap>
+  );
+}
+
+// ─── Print Recipe Modal ───────────────────────────────────────────────────────
+function PrintRecipeModal({recipe,onClose}){
+  const totalCost=recipe.ingredients.reduce((s,i)=>s+(i.qty*i.costPerUnit),0);
+  const margin=recipe.salePrice>0?((recipe.salePrice-totalCost)/recipe.salePrice*100).toFixed(1):0;
+  const costPct=recipe.salePrice>0?(totalCost/recipe.salePrice*100).toFixed(1):0;
+  const doPrint=()=>{
+    const html=`<!DOCTYPE html><html><head><meta charset="utf-8"><title>${recipe.name}</title>
+<style>*{margin:0;padding:0;box-sizing:border-box}body{font-family:'Trebuchet MS',sans-serif;background:#fff;color:#111;padding:28px 32px;font-size:13px}
+h1{font-size:24px;font-weight:800;color:#0d1829;letter-spacing:1px;margin-bottom:4px}.sub{font-size:12px;color:#666;margin-bottom:10px}
+.badge{display:inline-block;padding:2px 9px;border-radius:10px;font-size:10px;font-weight:700;background:#fff3cd;border:1px solid #e0a800;color:#7a4f00;margin:2px}
+hr{border:none;border-top:2px solid #0d1829;margin:14px 0}.kpi-row{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:18px}
+.kpi{border:1px solid #ddd;border-radius:7px;padding:10px 14px}.kpi-lbl{font-size:9px;color:#888;text-transform:uppercase;letter-spacing:1px;margin-bottom:3px}.kpi-val{font-size:19px;font-weight:800}
+.section{font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:1.5px;color:#0d1829;border-bottom:2px solid #0d1829;padding-bottom:6px;margin:18px 0 10px}
+table{width:100%;border-collapse:collapse;margin-bottom:16px}th{background:#0d1829;color:#fff;padding:7px 11px;font-size:10px;text-transform:uppercase;letter-spacing:1px;text-align:left}
+td{padding:7px 11px;border-bottom:1px solid #f0f0f0;font-size:12px}tr:nth-child(even) td{background:#f9fafb}
+.footer{display:flex;justify-content:space-between;border-top:1px solid #ddd;padding-top:10px;margin-top:20px;font-size:10px;color:#aaa}
+@media print{body{padding:10px}}</style></head><body>
+<div style="display:flex;justify-content:space-between;align-items:flex-start"><div>
+<h1>${recipe.name}</h1><div class="sub">${recipe.category} · ${recipe.portions} μερίδες · ${recipe.ingredients.length} υλικά</div>
+<div>${(recipe.allergens||[]).map(a=>`<span class="badge">${a}</span>`).join("")}</div></div>
+<div style="text-align:right;font-size:11px;color:#888"><div>Εκτυπώθηκε</div><div style="font-weight:700;color:#333">${new Date().toLocaleDateString("el-GR")}</div></div></div>
+<hr><div class="kpi-row">
+<div class="kpi"><div class="kpi-lbl">Κόστος Υλικών</div><div class="kpi-val" style="color:#dc2626">${totalCost.toFixed(4)}€</div></div>
+<div class="kpi"><div class="kpi-lbl">Κόστος/Μερίδα</div><div class="kpi-val" style="color:#d97706">${(totalCost/recipe.portions).toFixed(4)}€</div></div>
+<div class="kpi"><div class="kpi-lbl">Τιμή Πώλησης</div><div class="kpi-val" style="color:#16a34a">${recipe.salePrice.toFixed(2)}€</div></div>
+<div class="kpi"><div class="kpi-lbl">Περιθώριο</div><div class="kpi-val" style="color:#0d1829">${margin}%</div></div></div>
+<div class="section">🥗 Υλικά</div>
+<table><thead><tr><th>#</th><th>Υλικό</th><th>Ποσότητα</th><th>Μονάδα</th><th style="text-align:right">Τιμή/Μον.</th><th style="text-align:right">Κόστος</th></tr></thead><tbody>
+${recipe.ingredients.map((ing,i)=>{const c=ing.qty*ing.costPerUnit;return`<tr><td style="color:#888">${i+1}</td><td style="font-weight:600">${ing.material}</td><td style="text-align:right">${ing.qty}</td><td>${ing.unit}</td><td style="text-align:right">${ing.costPerUnit.toFixed(4)}€</td><td style="text-align:right;font-weight:700">${c.toFixed(4)}€</td></tr>`;}).join("")}
+<tr><td colspan="5" style="text-align:right;font-weight:700;border-top:2px solid #0d1829">ΣΥΝΟΛΟ:</td><td style="font-weight:800;color:#dc2626;border-top:2px solid #0d1829">${totalCost.toFixed(4)}€</td></tr></tbody></table>
+${recipe.instructions?`<div class="section">📝 Οδηγίες</div><div style="background:#f9fafb;border-left:4px solid #0d1829;padding:12px 16px;font-size:12px;line-height:1.8;white-space:pre-wrap;margin-bottom:16px">${recipe.instructions}</div>`:""}
+${recipe.notes?`<div class="section">💬 Σχόλια</div><div style="background:#fffbeb;border-left:4px solid #d97706;padding:12px 16px;font-size:12px;line-height:1.8">${recipe.notes}</div>`:""}
+<div class="footer"><span>KitchenOS — Σύστημα Διαχείρισης Κουζίνας</span><span>${new Date().toLocaleDateString("el-GR")} ${new Date().toLocaleTimeString("el-GR",{hour:"2-digit",minute:"2-digit"})}</span></div>
+<script>window.onload=function(){window.print()}<\/script></body></html>`;
+    const w=window.open("","_blank","width=850,height=950");w.document.open();w.document.write(html);w.document.close();
+  };
+  return(
+    <div onClick={e=>{if(e.target===e.currentTarget)onClose();}} style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.88)",zIndex:9999,display:"flex",alignItems:"center",justifyContent:"center",padding:20}}>
+      <div style={{background:"#fff",borderRadius:16,width:"min(860px,96vw)",maxHeight:"92vh",overflow:"hidden",display:"flex",flexDirection:"column",boxShadow:"0 30px 80px rgba(0,0,0,0.6)"}}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"13px 20px",background:"#0d1829"}}>
+          <div style={{color:"#e2c97e",fontWeight:700}}>📄 Προεπισκόπηση — {recipe.name}</div>
+          <div style={{display:"flex",gap:10}}>
+            <button onClick={doPrint} style={{padding:"8px 20px",background:"#16a34a",border:"none",borderRadius:7,color:"#fff",fontWeight:700,fontSize:13,cursor:"pointer"}}>🖨 ΕΚΤΥΠΩΣΗ / PDF</button>
+            <button onClick={onClose} style={{padding:"8px 13px",background:"#374151",border:"none",borderRadius:7,color:"#fff",fontSize:17,cursor:"pointer"}}>✕</button>
+          </div>
+        </div>
+        <div style={{overflowY:"auto",background:"#e5e7eb",padding:22}}>
+          <div style={{background:"#fff",borderRadius:10,padding:"26px 32px",maxWidth:760,margin:"0 auto",boxShadow:"0 4px 20px rgba(0,0,0,0.1)"}}>
+            <div style={{display:"flex",justifyContent:"space-between",borderBottom:"3px solid #0d1829",paddingBottom:14,marginBottom:16}}>
+              <div>
+                <div style={{fontSize:22,fontWeight:800,color:"#0d1829"}}>{recipe.name}</div>
+                <div style={{fontSize:12,color:"#666",marginTop:3}}>{recipe.category} · {recipe.portions} μερίδες · {recipe.ingredients.length} υλικά</div>
+                <div style={{marginTop:6,display:"flex",gap:4,flexWrap:"wrap"}}>{(recipe.allergens||[]).map(a=><span key={a} style={{background:"#fff3cd",border:"1px solid #e0a800",color:"#7a4f00",padding:"2px 8px",borderRadius:10,fontSize:10,fontWeight:700}}>{a}</span>)}</div>
+              </div>
+              <div style={{textAlign:"right",fontSize:11,color:"#888"}}><div>Εκτυπώθηκε</div><div style={{fontWeight:700,color:"#333"}}>{new Date().toLocaleDateString("el-GR")}</div></div>
+            </div>
+            <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:10,marginBottom:16}}>
+              {[{l:"Κόστος Υλικών",v:`${totalCost.toFixed(4)}€`,c:"#dc2626"},{l:"Κόστος/Μερίδα",v:`${(totalCost/recipe.portions).toFixed(4)}€`,c:"#d97706"},{l:"Τιμή Πώλησης",v:`${recipe.salePrice.toFixed(2)}€`,c:"#16a34a"},{l:"Περιθώριο",v:`${margin}%`,c:"#0d1829"}].map(k=>(
+                <div key={k.l} style={{border:"1px solid #e5e7eb",borderRadius:7,padding:"9px 12px"}}><div style={{fontSize:9,color:"#888",textTransform:"uppercase",letterSpacing:1,marginBottom:2}}>{k.l}</div><div style={{fontSize:18,fontWeight:800,color:k.c}}>{k.v}</div></div>
+              ))}
+            </div>
+            <div style={{marginBottom:16}}>
+              <div style={{fontSize:11,fontWeight:600,color:"#555",marginBottom:3}}>Food Cost: {costPct}%</div>
+              <div style={{background:"#eee",height:7,borderRadius:4,overflow:"hidden"}}><div style={{height:"100%",width:`${Math.min(parseFloat(costPct),100)}%`,background:parseFloat(costPct)>35?"#dc2626":parseFloat(costPct)>28?"#d97706":"#16a34a",borderRadius:4}}/></div>
+            </div>
+            <div style={{fontSize:11,fontWeight:700,textTransform:"uppercase",letterSpacing:1.5,color:"#0d1829",borderBottom:"2px solid #0d1829",paddingBottom:5,marginBottom:10}}>🥗 Υλικά</div>
+            <table style={{width:"100%",borderCollapse:"collapse",marginBottom:16}}>
+              <thead><tr>{["#","Υλικό","Ποσ.","Μον.","Τιμή/Μον.","Κόστος"].map(h=><th key={h} style={{padding:"6px 10px",background:"#0d1829",color:"#fff",fontSize:10,textTransform:"uppercase",letterSpacing:1,textAlign:"left"}}>{h}</th>)}</tr></thead>
+              <tbody>
+                {recipe.ingredients.map((ing,i)=>{const c=ing.qty*ing.costPerUnit;return(
+                  <tr key={i} style={{background:i%2===0?"#fff":"#f9fafb"}}>
+                    <td style={{padding:"6px 10px",color:"#888",fontSize:11,borderBottom:"1px solid #f0f0f0"}}>{i+1}</td>
+                    <td style={{padding:"6px 10px",fontWeight:600,fontSize:12,borderBottom:"1px solid #f0f0f0"}}>{ing.material}</td>
+                    <td style={{padding:"6px 10px",textAlign:"right",fontSize:12,borderBottom:"1px solid #f0f0f0"}}>{ing.qty}</td>
+                    <td style={{padding:"6px 10px",color:"#666",fontSize:11,borderBottom:"1px solid #f0f0f0"}}>{ing.unit}</td>
+                    <td style={{padding:"6px 10px",textAlign:"right",fontSize:12,borderBottom:"1px solid #f0f0f0"}}>{ing.costPerUnit.toFixed(4)}€</td>
+                    <td style={{padding:"6px 10px",fontWeight:700,fontSize:12,borderBottom:"1px solid #f0f0f0"}}>{c.toFixed(4)}€</td>
+                  </tr>
+                );})}
+                <tr><td colSpan={5} style={{padding:"8px 10px",textAlign:"right",fontWeight:700,borderTop:"2px solid #0d1829"}}>ΣΥΝΟΛΟ:</td><td style={{padding:"8px 10px",fontWeight:800,color:"#dc2626",borderTop:"2px solid #0d1829"}}>{totalCost.toFixed(4)}€</td></tr>
+              </tbody>
+            </table>
+            {recipe.instructions&&<><div style={{fontSize:11,fontWeight:700,textTransform:"uppercase",letterSpacing:1.5,color:"#0d1829",borderBottom:"2px solid #0d1829",paddingBottom:5,marginBottom:8}}>📝 Οδηγίες</div><div style={{background:"#f9fafb",borderLeft:"4px solid #0d1829",padding:"11px 14px",borderRadius:"0 6px 6px 0",fontSize:12,lineHeight:1.8,whiteSpace:"pre-wrap",marginBottom:14}}>{recipe.instructions}</div></>}
+            {recipe.notes&&<><div style={{fontSize:11,fontWeight:700,textTransform:"uppercase",letterSpacing:1.5,color:"#0d1829",borderBottom:"2px solid #d97706",paddingBottom:5,marginBottom:8}}>💬 Σχόλια</div><div style={{background:"#fffbeb",borderLeft:"4px solid #d97706",padding:"11px 14px",borderRadius:"0 6px 6px 0",fontSize:12,lineHeight:1.8,marginBottom:14}}>{recipe.notes}</div></>}
+            <div style={{display:"flex",justifyContent:"space-between",borderTop:"1px solid #e5e7eb",paddingTop:8,marginTop:8,fontSize:10,color:"#aaa"}}>
+              <span>KitchenOS</span><span>{new Date().toLocaleDateString("el-GR")} {new Date().toLocaleTimeString("el-GR",{hour:"2-digit",minute:"2-digit"})}</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Recipes Page ─────────────────────────────────────────────────────────────
+function RecipesPage({data,save,notify,setPage,activeProject}){
+  const [search,setSearch]=useState("");
+  const [printRecipe,setPrintRecipe]=useState(null);
+  const [projFilter,setProjFilter]=useState(activeProject||"all");
+
+  useEffect(()=>{if(activeProject)setProjFilter(activeProject);},[activeProject]);
+
+  const filtered=data.recipes.filter(r=>{
+    if(projFilter!=="all"&&r.projectId!==parseInt(projFilter))return false;
+    if(search&&!r.name.toLowerCase().includes(search.toLowerCase()))return false;
+    return true;
+  });
+
+  const cloneRecipe=(r)=>{
+    const c={...r,id:Date.now(),name:`${r.name} (Αντίγραφο)`,ingredients:r.ingredients.map(i=>({...i}))};
+    save({...data,recipes:[...data.recipes,c]});
+    notify("✅ Η συνταγή αντιγράφηκε — μπορείτε να την επεξεργαστείτε");
+  };
+
+  const moveRecipe=(recipe,newProjectId)=>{
+    save({...data,recipes:data.recipes.map(r=>r.id===recipe.id?{...r,projectId:newProjectId===null?null:parseInt(newProjectId)}:r)});
+    notify("✅ Η συνταγή μεταφέρθηκε");
+  };
+
+  return(
+    <PageWrap>
+      {printRecipe&&<PrintRecipeModal recipe={printRecipe} onClose={()=>setPrintRecipe(null)}/>}
+      <div style={{display:"flex",gap:12,marginBottom:16,alignItems:"center",flexWrap:"wrap"}}>
+        <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="🔍 Αναζήτηση..."
+          style={{padding:"9px 12px",background:"#0a1520",border:"1px solid #1e3a5f",borderRadius:7,color:"#c8daea",fontSize:13,outline:"none",width:260}}/>
+        <select value={projFilter} onChange={e=>setProjFilter(e.target.value)}
+          style={{padding:"9px 12px",background:"#0a1520",border:"1px solid #1e3a5f",borderRadius:7,color:"#c8daea",fontSize:13,outline:"none"}}>
+          <option value="all">📚 Όλα τα Projects</option>
+          {(data.projects||[]).map(p=><option key={p.id} value={p.id}>🏢 {p.name}</option>)}
+        </select>
+        <span style={{color:"#4a6a8a",fontSize:13,marginLeft:"auto"}}>{filtered.length} συνταγές</span>
+        <Btn onClick={()=>setPage("recipe-form")} variant="success">+ Νέα Συνταγή</Btn>
+      </div>
+
+      {filtered.length===0?(
+        <Card style={{textAlign:"center",padding:50}}>
+          <div style={{fontSize:40,marginBottom:10}}>📖</div>
+          <div style={{color:"#4a6a8a"}}>Δεν υπάρχουν συνταγές για αυτό το φίλτρο</div>
+          <Btn style={{marginTop:14}} onClick={()=>setPage("recipe-form")} variant="success">+ Νέα Συνταγή</Btn>
+        </Card>
+      ):(
+        <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(300px,1fr))",gap:14}}>
+          {filtered.map(r=>{
+            const totalCost=r.ingredients.reduce((s,i)=>s+(i.qty*i.costPerUnit),0);
+            const margin=r.salePrice>0?((r.salePrice-totalCost)/r.salePrice*100).toFixed(1):0;
+            const proj=data.projects?.find(p=>p.id===r.projectId);
+            const pColor=proj?PROJECT_COLORS[(proj.id-1)%PROJECT_COLORS.length]:"#4a6a8a";
+            return(
+              <Card key={r.id} style={{borderTop:`3px solid #d97706`}}>
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:10}}>
+                  <div>
+                    <div style={{color:"#e2c97e",fontWeight:700,fontSize:14}}>{r.name}</div>
+                    <div style={{color:"#4a6a8a",fontSize:11,marginTop:2}}>{r.category} · {r.ingredients.length} υλικά · {r.portions} μερ.</div>
+                    {proj&&<div style={{color:pColor,fontSize:10,marginTop:2,fontWeight:600}}>🏢 {proj.name}</div>}
+                  </div>
+                </div>
+                <div style={{display:"flex",gap:8,marginBottom:12}}>
+                  {[{l:"ΚΟΣΤΟΣ",v:`${totalCost.toFixed(4)}€`,c:"#ef4444"},{l:"ΠΩΛΗΣΗ",v:`${r.salePrice.toFixed(2)}€`,c:"#16a34a"},{l:"ΠΕΡΙΘΩΡΙΟ",v:`${margin}%`,c:"#e2c97e"}].map(k=>(
+                    <div key={k.l} style={{flex:1,background:"#0a1520",borderRadius:6,padding:"7px 10px"}}>
+                      <div style={{color:"#4a6a8a",fontSize:9,marginBottom:1}}>{k.l}</div>
+                      <div style={{color:k.c,fontWeight:700,fontSize:13}}>{k.v}</div>
+                    </div>
+                  ))}
+                </div>
+                {(r.allergens||[]).length>0&&<div style={{display:"flex",gap:3,marginBottom:10,flexWrap:"wrap"}}>{r.allergens.map(a=><span key={a} style={{background:"#1a1500",border:"1px solid #4a3a00",color:"#f59e0b",fontSize:9,padding:"1px 7px",borderRadius:8}}>{a}</span>)}</div>}
+
+                {/* Clone to project */}
+                <div style={{marginBottom:8}}>
+                  <select onChange={e=>{if(e.target.value)moveRecipe(r,e.target.value===""?null:e.target.value);e.target.value="";}}
+                    style={{width:"100%",padding:"6px 10px",background:"#0a1520",border:"1px solid #1e3a5f",borderRadius:6,color:"#4a6a8a",fontSize:11,outline:"none"}}>
+                    <option value="">📁 Μεταφορά σε project...</option>
+                    {(data.projects||[]).filter(p=>p.id!==r.projectId).map(p=><option key={p.id} value={p.id}>{p.name}</option>)}
+                  </select>
+                </div>
+
+                <div style={{display:"flex",gap:6}}>
+                  <Btn small variant="ghost" style={{flex:1}} onClick={()=>setPrintRecipe(r)}>📄 Εκτύπωση</Btn>
+                  <Btn small variant="ghost" onClick={()=>cloneRecipe(r)}>⧉ Clone</Btn>
+                  <Btn small variant="danger" onClick={()=>{save({...data,recipes:data.recipes.filter(x=>x.id!==r.id)});notify("Διαγράφηκε");}}>✕</Btn>
+                </div>
+              </Card>
+            );
+          })}
+        </div>
+      )}
+    </PageWrap>
+  );
+}
+
+// ─── Recipe Form ──────────────────────────────────────────────────────────────
+function RecipeFormPage({data,save,notify,activeProject}){
+  const [form,setForm]=useState({name:"",category:"ΖΕΣΤΑ",portions:1,salePrice:"",allergens:[],instructions:"",notes:"",projectId:activeProject||null});
+  const [ingredients,setIngredients]=useState([{material:"",qty:"",unit:"ΓΡΑΜΜΑΡΙΑ",costPerUnit:""}]);
+  const [cloneFrom,setCloneFrom]=useState("");
+
+  const ALLERGENS=["ΓΛΟΥΤΕΝΗ","ΓΑΛΑ","ΑΥΓΑ","ΨΑΡΙ","ΟΣΤΡΑΚΑ","ΣΕΛΙΝΟ","ΜΟΥΣΤΑΡΔΑ","ΣΗΣΑΜΙ","ΘΕΙΙΚΑ","ΑΡΑΧΙΔΕΣ","ΞΗΡΑ ΚΕΛΥΦΗ"];
+  const CATS=["ΖΕΣΤΑ","ΚΡΥΑ","ΣΟΥΠΕΣ","ΖΥΜΑΡΙΚΑ","ΨΑΡΙΑ","ΚΡΕΑΤΑ","ΓΛΥΚΑ","ΣΑΛΑΤΕΣ"];
+  const UNITS=["ΓΡΑΜΜΑΡΙΑ","ΚΙΛΟ","ΛΙΤΡΟ","ML","ΤΕΜ","ΤΕΜΑΧΙΟ"];
+
+  // Load from existing recipe (clone/edit)
+  const loadRecipe=(id)=>{
+    if(!id)return;
+    const r=data.recipes.find(x=>x.id===parseInt(id));if(!r)return;
+    setForm({name:`${r.name}`,category:r.category,portions:r.portions,salePrice:r.salePrice,allergens:[...r.allergens],instructions:r.instructions,notes:r.notes,projectId:activeProject||r.projectId});
+    setIngredients(r.ingredients.map(i=>({...i})));
+    setCloneFrom("");
+  };
+
+  const addIng=()=>setIngredients([...ingredients,{material:"",qty:"",unit:"ΓΡΑΜΜΑΡΙΑ",costPerUnit:""}]);
+  const removeIng=i=>setIngredients(ingredients.filter((_,idx)=>idx!==i));
+  const updateIng=(i,k,v)=>{const r=[...ingredients];r[i]={...r[i],[k]:v};setIngredients(r);};
+  const toggleAllergen=a=>setForm({...form,allergens:form.allergens.includes(a)?form.allergens.filter(x=>x!==a):[...form.allergens,a]});
+
+  // Auto-fill price from project prices
+  const autofillPrice=(i,material)=>{
+    const latest=getLatestPrices(data.prices,form.projectId);
+    const match=latest.find(p=>p.product===material.toUpperCase().trim());
+    if(match){const r=[...ingredients];r[i]={...r[i],costPerUnit:match.price};setIngredients(r);}
+  };
+
+  const totalCost=ingredients.reduce((s,i)=>{const q=parseFloat(i.qty)||0,c=parseFloat(i.costPerUnit)||0;return s+q*c;},0);
+  const salePrice=parseFloat(form.salePrice)||0;
+  const margin=salePrice>0?((salePrice-totalCost)/salePrice*100).toFixed(1):0;
+  const costPct=salePrice>0?(totalCost/salePrice*100).toFixed(1):0;
+
+  const saveRecipe=()=>{
+    if(!form.name.trim()){notify("Συμπληρώστε όνομα","error");return;}
+    const recipe={id:Date.now(),...form,portions:parseInt(form.portions)||1,salePrice:parseFloat(form.salePrice)||0,projectId:form.projectId?parseInt(form.projectId):null,
+      ingredients:ingredients.filter(i=>i.material.trim()).map(i=>({material:i.material.trim().toUpperCase(),qty:parseFloat(i.qty)||0,unit:i.unit,costPerUnit:parseFloat(i.costPerUnit)||0}))};
+    save({...data,recipes:[...data.recipes,recipe]});
+    notify("✅ Η συνταγή αποθηκεύτηκε!");
+    setForm({name:"",category:"ΖΕΣΤΑ",portions:1,salePrice:"",allergens:[],instructions:"",notes:"",projectId:activeProject||null});
+    setIngredients([{material:"",qty:"",unit:"ΓΡΑΜΜΑΡΙΑ",costPerUnit:""}]);
+  };
+
+  return(
+    <PageWrap>
+      {/* Clone from existing */}
+      <Card style={{marginBottom:16,border:"1px solid #1e3a5f"}}>
+        <div style={{color:"#e2c97e",fontWeight:700,marginBottom:12}}>📋 Φόρτωση από υπάρχουσα συνταγή (προαιρετικό)</div>
+        <div style={{display:"flex",gap:12,alignItems:"center"}}>
+          <select value={cloneFrom} onChange={e=>setCloneFrom(e.target.value)}
+            style={{flex:1,padding:"9px 12px",background:"#0a1520",border:"1px solid #1e3a5f",borderRadius:7,color:"#c8daea",fontSize:13,outline:"none"}}>
+            <option value="">— Επιλέξτε συνταγή για φόρτωση / κλωνοποίηση —</option>
+            {(data.projects||[]).map(p=>(
+              <optgroup key={p.id} label={`🏢 ${p.name}`}>
+                {data.recipes.filter(r=>r.projectId===p.id).map(r=><option key={r.id} value={r.id}>{r.name}</option>)}
+              </optgroup>
+            ))}
+            {data.recipes.filter(r=>!r.projectId).length>0&&(
+              <optgroup label="📚 Χωρίς Project">
+                {data.recipes.filter(r=>!r.projectId).map(r=><option key={r.id} value={r.id}>{r.name}</option>)}
+              </optgroup>
+            )}
+          </select>
+          <Btn onClick={()=>loadRecipe(cloneFrom)} variant="ghost" style={{whiteSpace:"nowrap"}}>⧉ Φόρτωση Συνταγής</Btn>
+        </div>
+        <div style={{color:"#4a6a8a",fontSize:11,marginTop:8}}>Μπορείτε να φορτώσετε οποιαδήποτε συνταγή, να την τροποποιήσετε και να την αποθηκεύσετε σε διαφορετικό project.</div>
+      </Card>
+
+      <div style={{display:"grid",gridTemplateColumns:"1fr 320px",gap:16}}>
+        <div>
+          <Card style={{marginBottom:14}}>
+            <div style={{color:"#e2c97e",fontWeight:700,marginBottom:16}}>✏ Στοιχεία Συνταγής</div>
+            <div style={{display:"grid",gridTemplateColumns:"2fr 1fr 1fr 1fr",gap:12,marginBottom:12}}>
+              <div style={{gridColumn:"1/-1"}}><Label>Όνομα Συνταγής *</Label><Input value={form.name} onChange={e=>setForm({...form,name:e.target.value})} placeholder="π.χ. CARPACCIO ΛΑΒΡΑΚΙ"/></div>
+              <div><Label>Κατηγορία</Label><Select value={form.category} onChange={e=>setForm({...form,category:e.target.value})}>{CATS.map(c=><option key={c}>{c}</option>)}</Select></div>
+              <div><Label>Μερίδες</Label><Input type="number" value={form.portions} onChange={e=>setForm({...form,portions:e.target.value})}/></div>
+              <div><Label>Τιμή Πώλησης €</Label><Input type="number" value={form.salePrice} onChange={e=>setForm({...form,salePrice:e.target.value})} placeholder="0.00"/></div>
+              <div>
+                <Label>Project</Label>
+                <Select value={form.projectId||""} onChange={e=>setForm({...form,projectId:e.target.value?parseInt(e.target.value):null})}>
+                  <option value="">— Χωρίς project —</option>
+                  {(data.projects||[]).map(p=><option key={p.id} value={p.id}>{p.name}</option>)}
+                </Select>
+              </div>
+            </div>
+            <div style={{marginBottom:12}}>
+              <Label>Αλλεργιογόνα</Label>
+              <div style={{display:"flex",flexWrap:"wrap",gap:5}}>
+                {ALLERGENS.map(a=>(
+                  <button key={a} onClick={()=>toggleAllergen(a)}
+                    style={{padding:"4px 9px",borderRadius:5,border:`1px solid ${form.allergens.includes(a)?"#d97706":"#1e3a5f"}`,background:form.allergens.includes(a)?"#1a0d00":"transparent",color:form.allergens.includes(a)?"#f59e0b":"#4a6a8a",fontSize:11,cursor:"pointer"}}>
+                    {a}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
+              <div><Label>Οδηγίες Παρασκευής</Label><textarea value={form.instructions} onChange={e=>setForm({...form,instructions:e.target.value})} placeholder="Βήμα βήμα..." style={{width:"100%",height:90,padding:"8px 11px",background:"#0a1520",border:"1px solid #1e3a5f",borderRadius:7,color:"#c8daea",fontSize:12,outline:"none",resize:"vertical",boxSizing:"border-box"}}/></div>
+              <div><Label>Σχόλια</Label><textarea value={form.notes} onChange={e=>setForm({...form,notes:e.target.value})} placeholder="Επιπλέον πληροφορίες..." style={{width:"100%",height:90,padding:"8px 11px",background:"#0a1520",border:"1px solid #1e3a5f",borderRadius:7,color:"#c8daea",fontSize:12,outline:"none",resize:"vertical",boxSizing:"border-box"}}/></div>
+            </div>
+          </Card>
+
+          <Card>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
+              <div style={{color:"#e2c97e",fontWeight:700}}>🥗 Υλικά Συνταγής</div>
+              <Btn small variant="ghost" onClick={addIng}>+ Υλικό</Btn>
+            </div>
+            <table style={{width:"100%",borderCollapse:"collapse"}}>
+              <thead><tr><TH>#</TH><TH>Υλικό</TH><TH>Ποσ.</TH><TH>Μον.</TH><TH>Τιμή/Μον.</TH><TH center>Κόστος</TH><TH></TH></tr></thead>
+              <tbody>
+                {ingredients.map((ing,i)=>{
+                  const cost=(parseFloat(ing.qty)||0)*(parseFloat(ing.costPerUnit)||0);
+                  const autoMatch=getLatestPrices(data.prices,form.projectId).find(p=>p.product===ing.material.toUpperCase().trim());
+                  return(
+                    <tr key={i} style={{background:i%2===0?"#080f1a":"transparent"}}>
+                      <TD center style={{color:"#4a6a8a"}}>{i+1}</TD>
+                      <TD>
+                        <input value={ing.material} onChange={e=>updateIng(i,"material",e.target.value)} onBlur={e=>autofillPrice(i,e.target.value)}
+                          placeholder="Υλικό..." list="mat-list"
+                          style={{width:"100%",background:"transparent",border:"none",borderBottom:"1px solid #1e3a5f",color:"#c8daea",fontSize:12,padding:"3px 0",outline:"none"}}/>
+                        <datalist id="mat-list">{[...new Set(data.prices.map(p=>p.product))].map(p=><option key={p} value={p}/>)}</datalist>
+                        {autoMatch&&<div style={{color:"#16a34a",fontSize:9,marginTop:1}}>✓ τιμή: {autoMatch.price.toFixed(4)}€ ({autoMatch.supplier})</div>}
+                      </TD>
+                      <TD><input type="number" value={ing.qty} onChange={e=>updateIng(i,"qty",e.target.value)} style={{width:60,background:"transparent",border:"none",borderBottom:"1px solid #1e3a5f",color:"#e2c97e",fontSize:12,padding:"3px 0",outline:"none",textAlign:"right"}}/></TD>
+                      <TD><select value={ing.unit} onChange={e=>updateIng(i,"unit",e.target.value)} style={{background:"#0a1520",border:"1px solid #1e3a5f",borderRadius:5,color:"#c8daea",fontSize:11,padding:"3px 5px"}}>{UNITS.map(u=><option key={u}>{u}</option>)}</select></TD>
+                      <TD><input type="number" value={ing.costPerUnit} onChange={e=>updateIng(i,"costPerUnit",e.target.value)} style={{width:75,background:"transparent",border:"none",borderBottom:"1px solid #1e3a5f",color:"#c8daea",fontSize:12,padding:"3px 0",outline:"none",textAlign:"right"}}/></TD>
+                      <TD center style={{color:"#e2c97e",fontWeight:600}}>{cost.toFixed(4)}€</TD>
+                      <TD center><Btn small variant="danger" onClick={()=>removeIng(i)}>✕</Btn></TD>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+            <button onClick={addIng} style={{width:"100%",padding:"8px",marginTop:8,background:"transparent",border:"1px dashed #1e3a5f",borderRadius:7,color:"#4a6a8a",fontSize:12,cursor:"pointer"}}>+ Υλικό</button>
+          </Card>
+        </div>
+
+        {/* Costing panel */}
+        <div>
+          <Card style={{position:"sticky",top:0}}>
+            <div style={{color:"#e2c97e",fontWeight:700,marginBottom:16}}>💶 Κοστολόγηση Real-time</div>
+            <div style={{background:"#0a1520",borderRadius:8,padding:14,marginBottom:14}}>
+              {[{l:"Κόστος Υλικών",v:`${totalCost.toFixed(4)}€`,c:"#ef4444"},{l:"Τιμή Πώλησης",v:`${salePrice.toFixed(2)}€`,c:"#16a34a"},{l:"Περιθώριο",v:`${margin}%`,c:"#e2c97e"},{l:"Food Cost",v:`${costPct}%`,c:parseFloat(costPct)>35?"#ef4444":parseFloat(costPct)>28?"#f59e0b":"#16a34a"}].map(k=>(
+                <div key={k.l} style={{display:"flex",justifyContent:"space-between",marginBottom:8,paddingBottom:8,borderBottom:"1px solid #0f2030"}}>
+                  <span style={{color:"#4a6a8a",fontSize:13}}>{k.l}</span>
+                  <span style={{color:k.c,fontWeight:700,fontSize:15}}>{k.v}</span>
+                </div>
+              ))}
+            </div>
+            <div style={{marginBottom:16}}>
+              <div style={{height:8,background:"#0a1520",borderRadius:4,overflow:"hidden"}}>
+                <div style={{height:"100%",width:`${Math.min(parseFloat(costPct),100)}%`,background:parseFloat(costPct)>35?"#ef4444":parseFloat(costPct)>28?"#f59e0b":"#16a34a",borderRadius:4,transition:"width 0.3s"}}/>
+              </div>
+            </div>
+            {form.projectId&&(
+              <div style={{background:"#0a1520",borderRadius:7,padding:"8px 12px",marginBottom:12,border:"1px solid #1e3a5f"}}>
+                <div style={{color:"#4a6a8a",fontSize:10,marginBottom:3}}>ΑΠΟΘΗΚΕΥΣΗ ΣΕ PROJECT</div>
+                <div style={{color:"#e2c97e",fontSize:12,fontWeight:700}}>{data.projects?.find(p=>p.id===form.projectId)?.name||"—"}</div>
+              </div>
+            )}
+            <Btn onClick={saveRecipe} variant="success" style={{width:"100%",padding:12,fontSize:14}}>💾 ΑΠΟΘΗΚΕΥΣΗ ΣΥΝΤΑΓΗΣ</Btn>
+          </Card>
+        </div>
+      </div>
+    </PageWrap>
+  );
+}
+
+// ─── Costing Page ─────────────────────────────────────────────────────────────
+function CostingPage({data,activeProject}){
+  const [selected,setSelected]=useState(null);
+  const [projFilter,setProjFilter]=useState(activeProject||"all");
+  const recipe=data.recipes.find(r=>r.id===selected);
+  const totalCost=recipe?recipe.ingredients.reduce((s,i)=>s+(i.qty*i.costPerUnit),0):0;
+  const margin=recipe?.salePrice>0?((recipe.salePrice-totalCost)/recipe.salePrice*100).toFixed(1):0;
+  const filteredRecipes=data.recipes.filter(r=>projFilter==="all"||r.projectId===parseInt(projFilter));
+
+  return(
+    <PageWrap>
+      <div style={{display:"grid",gridTemplateColumns:"240px 1fr",gap:16}}>
+        <Card>
+          <div style={{marginBottom:12}}>
+            <select value={projFilter} onChange={e=>{setProjFilter(e.target.value);setSelected(null);}}
+              style={{width:"100%",padding:"8px 10px",background:"#0a1520",border:"1px solid #1e3a5f",borderRadius:7,color:"#c8daea",fontSize:12,outline:"none"}}>
+              <option value="all">📚 Όλα</option>
+              {(data.projects||[]).map(p=><option key={p.id} value={p.id}>{p.name}</option>)}
+            </select>
+          </div>
+          <div style={{color:"#e2c97e",fontWeight:700,marginBottom:10,fontSize:12}}>ΕΠΙΛΟΓΗ ΣΥΝΤΑΓΗΣ</div>
+          {filteredRecipes.map(r=>(
+            <div key={r.id} onClick={()=>setSelected(r.id)}
+              style={{padding:"9px 10px",marginBottom:4,borderRadius:7,cursor:"pointer",background:selected===r.id?"#1e3a5f":"#0a1520",border:`1px solid ${selected===r.id?"#3a6a9a":"#1e3a5f"}`}}>
+              <div style={{color:selected===r.id?"#e2c97e":"#c8daea",fontSize:12,fontWeight:selected===r.id?700:400}}>{r.name}</div>
+              <div style={{color:"#4a6a8a",fontSize:10}}>{r.category}</div>
+            </div>
+          ))}
+        </Card>
+        {recipe?(
+          <Card>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:16}}>
+              <div><div style={{color:"#e2c97e",fontWeight:700,fontSize:16}}>{recipe.name}</div><div style={{color:"#4a6a8a",fontSize:12}}>{recipe.category} · {recipe.portions} μερίδες</div></div>
+            </div>
+            <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:10,marginBottom:16}}>
+              {[{l:"Κόστος",v:`${totalCost.toFixed(4)}€`,c:"#ef4444"},{l:"Κόστος/Μερ.",v:`${(totalCost/recipe.portions).toFixed(4)}€`,c:"#f59e0b"},{l:"Πώληση",v:`${recipe.salePrice.toFixed(2)}€`,c:"#16a34a"},{l:"Περιθώριο",v:`${margin}%`,c:"#e2c97e"}].map(k=>(
+                <div key={k.l} style={{background:"#0a1520",borderRadius:7,padding:"12px 14px"}}><div style={{color:"#4a6a8a",fontSize:10,marginBottom:4}}>{k.l}</div><div style={{color:k.c,fontWeight:700,fontSize:18}}>{k.v}</div></div>
+              ))}
+            </div>
+            <table style={{width:"100%",borderCollapse:"collapse"}}>
+              <thead><tr><TH>#</TH><TH>Υλικό</TH><TH>Ποσ.</TH><TH>Μον.</TH><TH center>Τιμή/Μον.</TH><TH center>Κόστος</TH><TH center>% Συνταγής</TH></tr></thead>
+              <tbody>{recipe.ingredients.map((ing,i)=>{
+                const cost=ing.qty*ing.costPerUnit;const pct=totalCost>0?(cost/totalCost*100).toFixed(1):0;
+                return(<tr key={i} style={{background:i%2===0?"#080f1a":"transparent"}}>
+                  <TD center style={{color:"#4a6a8a"}}>{i+1}</TD><TD style={{fontWeight:600}}>{ing.material}</TD>
+                  <TD center>{ing.qty}</TD><TD center style={{color:"#4a6a8a"}}>{ing.unit}</TD>
+                  <TD center>{ing.costPerUnit.toFixed(4)}€</TD>
+                  <TD center style={{color:"#e2c97e",fontWeight:600}}>{cost.toFixed(4)}€</TD>
+                  <TD center><div style={{display:"flex",alignItems:"center",gap:6}}>
+                    <div style={{flex:1,height:6,background:"#0a1520",borderRadius:3}}><div style={{height:"100%",width:`${pct}%`,background:"#e2c97e",borderRadius:3}}/></div>
+                    <span style={{color:"#4a6a8a",fontSize:11,width:32}}>{pct}%</span>
+                  </div></TD>
+                </tr>);
+              })}</tbody>
+            </table>
+          </Card>
+        ):(
+          <Card style={{display:"flex",alignItems:"center",justifyContent:"center"}}><div style={{textAlign:"center",color:"#4a6a8a"}}><div style={{fontSize:40,marginBottom:10}}>📖</div><div>Επιλέξτε συνταγή</div></div></Card>
+        )}
+      </div>
+    </PageWrap>
+  );
+}
+
+// ─── Order Page ───────────────────────────────────────────────────────────────
+function OrderPage({data,save,notify,activeProject}){
+  const [supplier,setSupplier]=useState(data.suppliers[0]?.name||"");
+  const [date,setDate]=useState(new Date().toISOString().split("T")[0]);
+  const [notes,setNotes]=useState("");
+  const [lines,setLines]=useState([{product:"",qty:"",unit:"ΚΙΛΟ",price:""}]);
+  const updateLine=(i,k,v)=>{const r=[...lines];r[i]={...r[i],[k]:v};setLines(r);};
+  const UNITS=["ΚΙΛΟ","ΛΙΤΡΟ","ΤΕΜ","ΤΜΧ","ΓΡΑΜΜΑΡΙΑ","ΤΕΜΑΧΙΟ","ΚΙΒΩΤΙΟ"];
+  const total=lines.reduce((s,l)=>{const q=parseFloat(l.qty)||0,p=parseFloat(l.price)||0;return s+q*p;},0);
+  const saveOrder=()=>{
+    const valid=lines.filter(l=>l.product.trim());if(!valid.length){notify("Προσθέστε προϊόντα","error");return;}
+    const o={id:Date.now(),date,supplier,notes,total,projectId:activeProject||null,lines:valid.map(l=>({...l,qty:parseFloat(l.qty)||0,price:parseFloat(l.price)||0,total:(parseFloat(l.qty)||0)*(parseFloat(l.price)||0)}))};
+    save({...data,orders:[...data.orders,o]});notify("✅ Παραγγελία αποθηκεύτηκε!");setLines([{product:"",qty:"",unit:"ΚΙΛΟ",price:""}]);setNotes("");
+  };
+  return(
+    <PageWrap>
+      <div style={{display:"grid",gridTemplateColumns:"260px 1fr",gap:16}}>
+        <Card>
+          <div style={{color:"#e2c97e",fontWeight:700,marginBottom:16}}>Στοιχεία Παραγγελίας</div>
+          <div style={{marginBottom:10}}><Label>Ημερομηνία</Label><Input type="date" value={date} onChange={e=>setDate(e.target.value)}/></div>
+          <div style={{marginBottom:10}}><Label>Προμηθευτής</Label><Select value={supplier} onChange={e=>setSupplier(e.target.value)}>{data.suppliers.filter(s=>s.active).map(s=><option key={s.id}>{s.name}</option>)}</Select></div>
+          <div style={{marginBottom:14}}><Label>Σημειώσεις</Label><textarea value={notes} onChange={e=>setNotes(e.target.value)} style={{width:"100%",height:70,padding:"8px 10px",background:"#0a1520",border:"1px solid #1e3a5f",borderRadius:7,color:"#c8daea",fontSize:12,outline:"none",resize:"none",boxSizing:"border-box"}}/></div>
+          <div style={{background:"#0a1520",borderRadius:8,padding:14,marginBottom:14}}>
+            <div style={{color:"#4a6a8a",fontSize:10,marginBottom:3}}>ΣΥΝΟΛΟ</div>
+            <div style={{color:"#e2c97e",fontWeight:700,fontSize:22}}>{total.toFixed(2)}€</div>
+            <div style={{color:"#4a6a8a",fontSize:11}}>+ΦΠΑ 13%: {(total*0.13).toFixed(2)}€</div>
+            <div style={{color:"#16a34a",fontWeight:600}}>{(total*1.13).toFixed(2)}€</div>
+          </div>
+          <Btn onClick={saveOrder} variant="success" style={{width:"100%",marginBottom:8}}>💾 ΑΠΟΘΗΚΕΥΣΗ</Btn>
+        </Card>
+        <Card>
+          <div style={{display:"flex",justifyContent:"space-between",marginBottom:12}}><div style={{color:"#e2c97e",fontWeight:700}}>Γραμμές Παραγγελίας</div><Btn small variant="ghost" onClick={()=>setLines([...lines,{product:"",qty:"",unit:"ΚΙΛΟ",price:""}])}>+ Γραμμή</Btn></div>
+          <table style={{width:"100%",borderCollapse:"collapse"}}>
+            <thead><tr><TH>#</TH><TH>Προϊόν</TH><TH>Ποσ.</TH><TH>Μον.</TH><TH center>Τιμή</TH><TH center>Σύνολο</TH><TH></TH></tr></thead>
+            <tbody>{lines.map((l,i)=>{const lt=(parseFloat(l.qty)||0)*(parseFloat(l.price)||0);return(
+              <tr key={i} style={{background:i%2===0?"#080f1a":"transparent"}}>
+                <TD center style={{color:"#4a6a8a"}}>{i+1}</TD>
+                <TD><input value={l.product} onChange={e=>updateLine(i,"product",e.target.value)} list="prod-list" placeholder="Προϊόν..." style={{width:"100%",background:"transparent",border:"none",borderBottom:"1px solid #1e3a5f",color:"#c8daea",fontSize:12,padding:"3px 0",outline:"none"}}/>
+                  <datalist id="prod-list">{[...new Set(data.prices.filter(p=>p.supplier===supplier).map(p=>p.product))].map(p=><option key={p} value={p}/>)}</datalist></TD>
+                <TD><input type="number" value={l.qty} onChange={e=>updateLine(i,"qty",e.target.value)} style={{width:55,background:"transparent",border:"none",borderBottom:"1px solid #1e3a5f",color:"#e2c97e",fontSize:12,padding:"3px 0",outline:"none",textAlign:"right"}}/></TD>
+                <TD><select value={l.unit} onChange={e=>updateLine(i,"unit",e.target.value)} style={{background:"#0a1520",border:"1px solid #1e3a5f",borderRadius:5,color:"#c8daea",fontSize:11,padding:"3px 5px"}}>{UNITS.map(u=><option key={u}>{u}</option>)}</select></TD>
+                <TD><input type="number" value={l.price} onChange={e=>updateLine(i,"price",e.target.value)} style={{width:65,background:"transparent",border:"none",borderBottom:"1px solid #1e3a5f",color:"#c8daea",fontSize:12,padding:"3px 0",outline:"none",textAlign:"right"}}/></TD>
+                <TD center style={{color:"#e2c97e",fontWeight:600}}>{lt.toFixed(2)}€</TD>
+                <TD center><Btn small variant="danger" onClick={()=>setLines(lines.filter((_,idx)=>idx!==i))}>✕</Btn></TD>
+              </tr>);})}</tbody>
+          </table>
+          <button onClick={()=>setLines([...lines,{product:"",qty:"",unit:"ΚΙΛΟ",price:""}])} style={{width:"100%",padding:"8px",marginTop:8,background:"transparent",border:"1px dashed #1e3a5f",borderRadius:7,color:"#4a6a8a",fontSize:12,cursor:"pointer"}}>+ Γραμμή</button>
+        </Card>
+      </div>
+    </PageWrap>
+  );
+}
+
+// ─── History Page ─────────────────────────────────────────────────────────────
+function HistoryPage({data,activeProject}){
+  const [supFilter,setSupFilter]=useState("ΟΛΑ");
+  const pool=data.orders.filter(o=>!activeProject||o.projectId===activeProject);
+  const filtered=supFilter==="ΟΛΑ"?pool:pool.filter(o=>o.supplier===supFilter);
+  const total=filtered.reduce((s,o)=>s+o.total,0);
+  return(
+    <PageWrap>
+      <div style={{display:"flex",gap:10,marginBottom:16,flexWrap:"wrap",alignItems:"center"}}>
+        {["ΟΛΑ",...data.suppliers.map(s=>s.name)].map(s=>(
+          <button key={s} onClick={()=>setSupFilter(s)} style={{padding:"7px 14px",borderRadius:7,border:`1px solid ${supFilter===s?"#e2c97e":"#1e3a5f"}`,background:supFilter===s?"#1a2a00":"transparent",color:supFilter===s?"#e2c97e":"#4a6a8a",fontSize:12,cursor:"pointer"}}>{s}</button>
+        ))}
+      </div>
+      {filtered.length===0?<Card style={{textAlign:"center",padding:50}}><div style={{color:"#4a6a8a"}}>Δεν υπάρχουν παραγγελίες</div></Card>:(
+        <>
+          <Card style={{marginBottom:14,display:"flex",gap:20}}>
+            <div><div style={{color:"#4a6a8a",fontSize:10}}>ΠΑΡΑΓΓΕΛΙΕΣ</div><div style={{color:"#e2c97e",fontWeight:700,fontSize:18}}>{filtered.length}</div></div>
+            <div><div style={{color:"#4a6a8a",fontSize:10}}>ΣΥΝΟΛΟ</div><div style={{color:"#16a34a",fontWeight:700,fontSize:18}}>{total.toFixed(2)}€</div></div>
+          </Card>
+          <Card><table style={{width:"100%",borderCollapse:"collapse"}}>
+            <thead><tr><TH>Αρ.</TH><TH>Ημερομηνία</TH><TH>Προμηθευτής</TH><TH>Σημειώσεις</TH><TH center>Τεμ.</TH><TH center>Σύνολο</TH></tr></thead>
+            <tbody>{filtered.sort((a,b)=>new Date(b.date)-new Date(a.date)).map((o,i)=>(
+              <tr key={o.id} style={{background:i%2===0?"#080f1a":"transparent"}}>
+                <TD center style={{color:"#4a7a9b",fontWeight:700}}>#{o.id}</TD>
+                <TD>{new Date(o.date).toLocaleDateString("el-GR")}</TD>
+                <TD style={{fontWeight:600}}>{o.supplier}</TD>
+                <TD style={{color:"#4a6a8a",fontSize:12}}>{o.notes||"—"}</TD>
+                <TD center>{o.lines?.length||0}</TD>
+                <TD center style={{color:"#e2c97e",fontWeight:700}}>{o.total.toFixed(2)}€</TD>
+              </tr>
+            ))}</tbody>
+          </table></Card>
+        </>
+      )}
+    </PageWrap>
+  );
+}
+
+// ─── Suppliers Page ───────────────────────────────────────────────────────────
+function SuppliersPage({data,save,notify}){
+  const [adding,setAdding]=useState(false);
+  const [form,setForm]=useState({name:"",category:"ΜΑΝΑΒΙΚΗ",email:"",phone:""});
+  const addSupplier=()=>{
+    if(!form.name.trim()){notify("Συμπληρώστε επωνυμία","error");return;}
+    save({...data,suppliers:[...data.suppliers,{id:Date.now(),...form,active:true,projectId:null}]});
+    notify("✅ Προμηθευτής προστέθηκε");setForm({name:"",category:"ΜΑΝΑΒΙΚΗ",email:"",phone:""});setAdding(false);
+  };
+  const toggle=id=>save({...data,suppliers:data.suppliers.map(s=>s.id===id?{...s,active:!s.active}:s)});
+  return(
+    <PageWrap>
+      <div style={{display:"flex",justifyContent:"space-between",marginBottom:16}}>
+        <div style={{color:"#e2c97e",fontWeight:700,fontSize:16}}>👥 Διαχείριση Προμηθευτών</div>
+        <Btn onClick={()=>setAdding(!adding)} variant={adding?"ghost":"success"}>{adding?"Ακύρωση":"+ Νέος"}</Btn>
+      </div>
+      {adding&&(<Card style={{marginBottom:14,border:"1px solid #16a34a"}}>
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr 1fr auto",gap:10,alignItems:"flex-end"}}>
+          <div><Label>Επωνυμία</Label><Input value={form.name} onChange={e=>setForm({...form,name:e.target.value})}/></div>
+          <div><Label>Κατηγορία</Label><Select value={form.category} onChange={e=>setForm({...form,category:e.target.value})}>{CATEGORIES.map(c=><option key={c}>{c}</option>)}</Select></div>
+          <div><Label>Email</Label><Input value={form.email} onChange={e=>setForm({...form,email:e.target.value})}/></div>
+          <div><Label>Τηλέφωνο</Label><Input value={form.phone} onChange={e=>setForm({...form,phone:e.target.value})}/></div>
+          <Btn onClick={addSupplier} variant="success">Αποθήκευση</Btn>
+        </div>
+      </Card>)}
+      {CATEGORIES.map(cat=>{
+        const cs=data.suppliers.filter(s=>s.category===cat);if(!cs.length)return null;
+        return(<div key={cat} style={{marginBottom:18}}>
+          <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:10}}><span style={{fontSize:18}}>{CAT_ICONS[cat]}</span><span style={{color:CAT_COLORS[cat],fontWeight:700}}>{cat}</span><span style={{color:"#4a6a8a",fontSize:12}}>({cs.length})</span></div>
+          <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(230px,1fr))",gap:10}}>
+            {cs.map(s=>(<Card key={s.id} style={{borderLeft:`3px solid ${CAT_COLORS[cat]}`,opacity:s.active?1:0.55}}>
+              <div style={{display:"flex",justifyContent:"space-between",marginBottom:6}}>
+                <div style={{color:"#e2c97e",fontWeight:700,fontSize:13}}>{s.name}</div>
+                <button onClick={()=>toggle(s.id)} style={{background:s.active?"#0d2010":"#1a0808",border:`1px solid ${s.active?"#16a34a":"#dc2626"}`,borderRadius:5,color:s.active?"#16a34a":"#dc2626",fontSize:9,padding:"2px 7px",cursor:"pointer"}}>{s.active?"✓ Ενεργός":"✕"}</button>
+              </div>
+              {s.email&&<div style={{color:"#4a6a8a",fontSize:11}}>✉ {s.email}</div>}
+            </Card>))}
+          </div>
+        </div>);
+      })}
+    </PageWrap>
+  );
+}
+
+// ─── Users Page ───────────────────────────────────────────────────────────────
+function UsersPage({data,save,notify,currentUser}){
+  const [adding,setAdding]=useState(false);
+  const [form,setForm]=useState({name:"",username:"",password:"",role:"chef"});
+  const addUser=()=>{
+    if(!form.name||!form.username||!form.password){notify("Συμπληρώστε όλα","error");return;}
+    if(data.users.find(u=>u.username===form.username)){notify("Username υπάρχει ήδη","error");return;}
+    save({...data,users:[...data.users,{id:Date.now(),...form,active:true}]});
+    notify("✅ Χρήστης δημιουργήθηκε");setForm({name:"",username:"",password:"",role:"chef"});setAdding(false);
+  };
+  const toggle=id=>{if(id===currentUser.id){notify("Δεν μπορείτε να απενεργοποιήσετε τον εαυτό σας","error");return;}save({...data,users:data.users.map(u=>u.id===id?{...u,active:!u.active}:u)});};
+  const del=id=>{if(id===currentUser.id){notify("Δεν μπορείτε να διαγράψετε τον εαυτό σας","error");return;}save({...data,users:data.users.filter(u=>u.id!==id)});notify("Διαγράφηκε");};
+  const RL={admin:"👑 Διαχειριστής",chef:"👨‍🍳 Σεφ"};
+  return(
+    <PageWrap>
+      <div style={{display:"flex",justifyContent:"space-between",marginBottom:16}}>
+        <div style={{color:"#e2c97e",fontWeight:700,fontSize:16}}>🔐 Διαχείριση Χρηστών</div>
+        <Btn onClick={()=>setAdding(!adding)} variant={adding?"ghost":"primary"}>{adding?"Ακύρωση":"+ Νέος Χρήστης"}</Btn>
+      </div>
+      {adding&&(<Card style={{marginBottom:14,border:"1px solid #1d4ed8"}}>
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr 1fr auto",gap:10,alignItems:"flex-end"}}>
+          <div><Label>Ονοματεπώνυμο</Label><Input value={form.name} onChange={e=>setForm({...form,name:e.target.value})}/></div>
+          <div><Label>Username</Label><Input value={form.username} onChange={e=>setForm({...form,username:e.target.value})}/></div>
+          <div><Label>Κωδικός</Label><Input type="password" value={form.password} onChange={e=>setForm({...form,password:e.target.value})}/></div>
+          <div><Label>Ρόλος</Label><Select value={form.role} onChange={e=>setForm({...form,role:e.target.value})}><option value="chef">Σεφ</option><option value="admin">Διαχειριστής</option></Select></div>
+          <Btn onClick={addUser} variant="primary">Δημιουργία</Btn>
+        </div>
+      </Card>)}
+      <Card><table style={{width:"100%",borderCollapse:"collapse"}}>
+        <thead><tr><TH>Ονοματεπώνυμο</TH><TH>Username</TH><TH>Ρόλος</TH><TH center>Κατάσταση</TH><TH center>Ενέργειες</TH></tr></thead>
+        <tbody>{data.users.map((u,i)=>(
+          <tr key={u.id} style={{background:i%2===0?"#080f1a":"transparent"}}>
+            <TD style={{fontWeight:600}}>{u.id===currentUser.id&&<span style={{color:"#e2c97e",fontSize:10,marginRight:5}}>ΕΓΩ</span>}{u.name}</TD>
+            <TD style={{color:"#4a7a9b",fontFamily:"monospace"}}>{u.username}</TD>
+            <TD><span style={{background:u.role==="admin"?"#1a0d00":"#0d1a2a",border:`1px solid ${u.role==="admin"?"#d97706":"#1d4ed8"}`,color:u.role==="admin"?"#d97706":"#60a5fa",padding:"2px 9px",borderRadius:10,fontSize:11}}>{RL[u.role]}</span></TD>
+            <TD center><span style={{background:u.active?"#0d2010":"#1a0808",border:`1px solid ${u.active?"#16a34a":"#dc2626"}`,color:u.active?"#16a34a":"#dc2626",padding:"2px 9px",borderRadius:10,fontSize:11}}>{u.active?"✓ Ενεργός":"✕ Ανενεργός"}</span></TD>
+            <TD center><div style={{display:"flex",gap:6,justifyContent:"center"}}>
+              <Btn small variant="ghost" onClick={()=>toggle(u.id)}>{u.active?"Απενεργ.":"Ενεργ."}</Btn>
+              <Btn small variant="danger" onClick={()=>del(u.id)}>✕</Btn>
+            </div></TD>
+          </tr>
+        ))}</tbody>
+      </table></Card>
+    </PageWrap>
+  );
+}
+
+
+// ─── Import Box (paste JSON) ──────────────────────────────────────────────────
+function ImportBox({data, save, notify}) {
+  const [open, setOpen] = useState(false);
+  const [text, setText] = useState("");
+  const [status, setStatus] = useState(null);
+
+  const doImport = () => {
+    try {
+      const parsed = JSON.parse(text);
+      let newRecipes = [];
+      if(parsed.version === "kitchenos-import-v1") {
+        newRecipes = parsed.recipes || [];
+      } else if(Array.isArray(parsed)) {
+        newRecipes = parsed;
+      } else if(parsed.recipes) {
+        newRecipes = parsed.recipes;
+      } else if(parsed.users && parsed.suppliers) {
+        save(parsed);
+        notify("✅ Πλήρης επαναφορά: " + (parsed.recipes?.length||0) + " συνταγές");
+        setOpen(false); setText(""); return;
+      }
+      const existingNames = new Set(data.recipes.map(r=>r.name.trim()));
+      const toAdd = newRecipes.filter(r=>!existingNames.has((r.name||"").trim()));
+      save({...data, recipes:[...data.recipes, ...toAdd]});
+      const msg = "✅ Εισήχθησαν " + toAdd.length + " συνταγές (" + (newRecipes.length-toAdd.length) + " διπλότυπα παραλείφθηκαν)";
+      setStatus({ok:true, msg});
+      notify(msg);
+      setTimeout(()=>{setOpen(false);setText("");setStatus(null);}, 2000);
+    } catch(e) {
+      setStatus({ok:false, msg:"❌ Μη έγκυρο JSON — ελέγξτε το αρχείο"});
+    }
+  };
+
+  return (
+    <div style={{background:"linear-gradient(135deg,#0d2010,#0d1829)",border:"1px solid #16a34a40",borderRadius:8,padding:14,marginBottom:10}}>
+      <div style={{color:"#16a34a",fontWeight:700,fontSize:13,marginBottom:6}}>📥 ΕΙΣΑΓΩΓΗ ΣΥΝΤΑΓΩΝ</div>
+      {!open ? (
+        <>
+          <div style={{color:"#4a6a8a",fontSize:11,marginBottom:10}}>
+            Ανοίξτε το <b style={{color:"#c8daea"}}>kitchenos_import.json</b> με Notepad, επιλέξτε τα πάντα <b style={{color:"#c8daea"}}>(Ctrl+A)</b>, αντιγράψτε <b style={{color:"#c8daea"}}>(Ctrl+C)</b> και επικολλήστε εδώ.
+          </div>
+          <Btn onClick={()=>setOpen(true)} variant="success" style={{width:"100%"}}>
+            📋 ΕΠΙΚΟΛΛΗΣΗ JSON — ΕΙΣΑΓΩΓΗ ΣΥΝΤΑΓΩΝ
+          </Btn>
+        </>
+      ) : (
+        <>
+          <div style={{color:"#4a6a8a",fontSize:11,marginBottom:8}}>
+            Επικολλήστε το περιεχόμενο του kitchenos_import.json <b style={{color:"#c8daea"}}>(Ctrl+V)</b>:
+          </div>
+          <textarea
+            value={text}
+            onChange={e=>setText(e.target.value)}
+            placeholder='Επικολλήστε εδώ το JSON... {"version":"kitchenos-import-v1","recipes":[...]}'
+            style={{width:"100%",height:120,padding:"9px 12px",background:"#0a1520",border:"1px solid #1e3a5f",borderRadius:7,color:"#c8daea",fontSize:11,outline:"none",resize:"vertical",boxSizing:"border-box",fontFamily:"monospace",marginBottom:8}}
+            autoFocus
+          />
+          {status && (
+            <div style={{padding:"8px 12px",borderRadius:6,marginBottom:8,background:status.ok?"#0d2010":"#200808",color:status.ok?"#16a34a":"#ef4444",fontSize:12,fontWeight:600}}>
+              {status.msg}
+            </div>
+          )}
+          <div style={{display:"flex",gap:8}}>
+            <Btn onClick={doImport} variant="success" style={{flex:1}} >
+              ✅ ΕΙΣΑΓΩΓΗ {text.length > 10 ? "(" + (text.match(/"name"/g)||[]).length + " συνταγές)" : ""}
+            </Btn>
+            <Btn onClick={()=>{setOpen(false);setText("");setStatus(null);}} variant="ghost">Ακύρωση</Btn>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+// ─── Settings Page ────────────────────────────────────────────────────────────
+function SettingsPage({data,save,notify}){
+  const [s,setS]=useState({...data.settings});
+  const exportData=()=>{
+    const blob=new Blob([JSON.stringify(data,null,2)],{type:"application/json"});
+    const url=URL.createObjectURL(blob);const a=document.createElement("a");
+    a.href=url;a.download=`kitchenos-backup-${new Date().toISOString().split("T")[0]}.json`;a.click();URL.revokeObjectURL(url);
+    notify("✅ Backup ολοκληρώθηκε");
+  };
+
+
+  return(
+    <PageWrap>
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:16}}>
+        <Card>
+          <div style={{color:"#e2c97e",fontWeight:700,marginBottom:16}}>⚙ Γενικές Ρυθμίσεις</div>
+          <div style={{marginBottom:14}}><Label>Επωνυμία</Label><Input value={s.company||""} onChange={e=>setS({...s,company:e.target.value})}/></div>
+          <div style={{marginBottom:16}}>
+            <Label>Πλαφόν Ανατίμησης (%)</Label>
+            <div style={{display:"flex",alignItems:"center",gap:12}}>
+              <input type="range" min="1" max="30" value={s.alertThreshold||5} onChange={e=>setS({...s,alertThreshold:parseInt(e.target.value)})} style={{flex:1}}/>
+              <div style={{background:"#0a1520",border:"1px solid #ef4444",borderRadius:7,padding:"7px 14px",color:"#ef4444",fontWeight:700,fontSize:18,minWidth:55,textAlign:"center"}}>{s.alertThreshold||5}%</div>
+            </div>
+          </div>
+          <Btn onClick={()=>{save({...data,settings:s});notify("✅ Αποθηκεύτηκε");}} variant="success" style={{width:"100%"}}>💾 Αποθήκευση</Btn>
+        </Card>
+        <Card>
+          <div style={{color:"#e2c97e",fontWeight:700,marginBottom:16}}>💾 Backup & Εισαγωγή Δεδομένων</div>
+          <div style={{background:"#0a1520",borderRadius:8,padding:14,marginBottom:14}}>
+            {[{l:"Projects",v:data.projects?.length||0},{l:"Προμηθευτές",v:data.suppliers.length},{l:"Τιμές",v:data.prices.length},{l:"Συνταγές",v:data.recipes.length},{l:"Παραγγελίες",v:data.orders.length},{l:"Χρήστες",v:data.users.length}].map(k=>(
+              <div key={k.l} style={{display:"flex",justifyContent:"space-between",marginBottom:6}}>
+                <span style={{color:"#7a9ab5",fontSize:13}}>{k.l}</span>
+                <span style={{color:"#e2c97e",fontWeight:700}}>{k.v}</span>
+              </div>
+            ))}
+          </div>
+
+          {/* Import section */}
+          <ImportBox data={data} save={save} notify={notify}/>
+
+          <Btn onClick={exportData} variant="ghost" style={{width:"100%",marginBottom:8}}>⬇ EXPORT BACKUP</Btn>
+          <div style={{color:"#4a6a8a",fontSize:11,textAlign:"center"}}>Αυτόματη αποθήκευση σε κάθε αλλαγή.</div>
+        </Card>
+      </div>
+    </PageWrap>
+  );
+}
